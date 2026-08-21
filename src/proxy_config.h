@@ -54,6 +54,11 @@ struct ProxyConfig {
     // ── Module-side knobs (never sent upstream) ──────────────────────────
     int64_t callTimeoutMs = 30000;
     int64_t startTimeoutMs = 120000;
+    /// Bound on the shutdown drain — a POLLING bound, not a hard one. The drain
+    /// loop checks the deadline BETWEEN `processVerifProxyTasks` calls, and a
+    /// single such call was measured blocking up to 3253ms on sepolia, so
+    /// stop() (and the destructor join) can overshoot this by roughly that
+    /// much. Measured stop() in a 15-minute run: 1102ms.
     int64_t drainTimeoutMs = 2000;
     int64_t pumpIntervalMs = 50;
     int64_t maxInFlight = 64;

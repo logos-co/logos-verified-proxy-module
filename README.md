@@ -129,6 +129,36 @@ Measured on sepolia over a 5-minute idle:
 polling block numbers sees time run backwards. Treat it as a diagnostic
 setting, not a deployment option.
 
+## Pump behaviour, measured
+
+`status().pump` reports a histogram of how long `processVerifProxyTasks` blocks,
+split by whether a call was in flight. Over 15 minutes on sepolia (21,510
+samples, 358 verified calls):
+
+| | idle | busy |
+|---|---|---|
+| `<1ms` | **99.991%** | 88.8% |
+| `<500ms` | — | 98.1% |
+| `<2000ms` | — | 99.94% |
+| max observed | — | **3253 ms** |
+
+Idle pumps essentially always return instantly, because chronos `poll()` is not
+entered when nothing is pending — so `pumpIntervalMs` (50ms) is what actually
+paces the idle loop, as intended.
+
+Two consequences worth knowing:
+
+* `drainCommands()` runs immediately before the poll, so **worst-case
+  command-queue latency equals worst-case pump duration, ~3.25s**. Bounded, and
+  far under a 30s `callTimeoutMs`, but not nothing.
+* `drainTimeoutMs` is a **polling** bound: the drain loop checks its deadline
+  between pump calls, so `stop()` — and the destructor join — can overshoot it
+  by up to one pump duration. Measured `stop()` in that run: 1102 ms.
+
+Verified reads have a much fatter latency tail than a plain RPC call: the worst
+single `eth_blockNumber` in that run took **12.6 s**, against a 30 s default
+`callTimeoutMs`. Budget accordingly.
+
 ## Known limitations
 
 * **State reads need a provider with a wide proof window.** `eth_getBalance`,

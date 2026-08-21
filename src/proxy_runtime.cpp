@@ -215,9 +215,11 @@ void ProxyRuntime::threadMain() {
             nextKeepAlive = steady_clock::now() + milliseconds(m_cfg.keepAliveIntervalMs);
         }
 
+        const bool wasBusy = m_inFlight.load(std::memory_order_acquire) > 0;
         const auto t0 = steady_clock::now();
         const int rc = ::processVerifProxyTasks(m_ctx);
         const auto dt = steady_clock::now() - t0;
+        recordPump(duration_cast<milliseconds>(dt).count(), wasBusy);
         if (rc == RET_CANCELLED) break;
 
         if (m_inFlight.load(std::memory_order_acquire) > 0) {
@@ -244,6 +246,13 @@ void ProxyRuntime::teardown() {
     // DRAIN BEFORE STOPPING. stopVerifProxy sets ctx.stop, and
     // processVerifProxyTasks checks ctx.stop BEFORE polling — so after it, no
     // callback can ever fire and anything in flight would hang forever.
+    //
+    // The deadline is checked BETWEEN pump calls, so it bounds when we stop
+    // STARTING new ones, not when we return: a single processVerifProxyTasks
+    // was measured at up to 3253ms (sepolia, 21510 samples), so this can
+    // overshoot drainTimeoutMs by about that much. Bounded, which is what makes
+    // the unconditional join in stop() safe — but not the tight bound the name
+    // suggests.
     const auto deadline = steady_clock::now() + milliseconds(m_cfg.drainTimeoutMs);
     while (m_inFlight.load() > 0 && steady_clock::now() < deadline) {
         if (::processVerifProxyTasks(m_ctx) == RET_CANCELLED) break;
@@ -363,6 +372,34 @@ void ProxyRuntime::callbackTrampoline(Context*, int status, char* result, void* 
     }
 }
 
+void ProxyRuntime::recordPump(int64_t ms, bool busy) {
+    static constexpr int64_t kEdges[kPumpBuckets - 1] = { 1, 5, 20, 100, 500, 2000 };
+    int b = kPumpBuckets - 1;
+    for (int i = 0; i < kPumpBuckets - 1; ++i)
+        if (ms < kEdges[i]) { b = i; break; }
+    (busy ? m_pumpBusy : m_pumpIdle)[b].fetch_add(1, std::memory_order_relaxed);
+    m_pumpCalls.fetch_add(1, std::memory_order_relaxed);
+
+    int64_t prev = m_pumpMaxMs.load(std::memory_order_relaxed);
+    while (ms > prev && !m_pumpMaxMs.compare_exchange_weak(prev, ms,
+                                                           std::memory_order_relaxed)) { }
+}
+
+json ProxyRuntime::pumpHistogram() const {
+    auto dump = [](const std::atomic<int64_t>* a) {
+        json out = json::array();
+        for (int i = 0; i < kPumpBuckets; ++i) out.push_back(a[i].load());
+        return out;
+    };
+    return json{
+        { "calls", m_pumpCalls.load() },
+        { "maxMs", m_pumpMaxMs.load() },
+        { "bucketEdgesMs", json::array({ 1, 5, 20, 100, 500, 2000 }) },
+        { "idle", dump(m_pumpIdle) },
+        { "busy", dump(m_pumpBusy) },
+    };
+}
+
 void ProxyRuntime::noteFinished(uint64_t, bool ok) {
     m_inFlight.fetch_sub(1, std::memory_order_acq_rel);
     if (!ok) m_callsFailed.fetch_add(1, std::memory_order_relaxed);
@@ -425,5 +462,6 @@ json ProxyRuntime::statusSnapshot() const {
         { "heartbeatFailures", m_heartbeatFailures.load() },
     };
     j["keepAlive"] = m_cfg.keepAlive;
+    j["pump"] = pumpHistogram();
     return j;
 }

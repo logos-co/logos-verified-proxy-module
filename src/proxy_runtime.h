@@ -70,6 +70,19 @@ public:
 
     nlohmann::json statusSnapshot() const;
 
+    /// How long `processVerifProxyTasks` actually blocks.
+    ///
+    /// The pump already measures this to decide its 1ms backoff, so bucketing
+    /// it is nearly free — and it answers the one question that makes the
+    /// unconditional destructor join safe or unsafe: does the C call return in
+    /// bounded time? A p100 in the seconds would mean stop() can stall the host
+    /// for that long, and would also bound how late a queued command can be.
+    ///
+    /// Split by in-flight count because the two regimes are different: with a
+    /// call pending, poll() blocks on I/O; idle, it returns immediately.
+    static constexpr int kPumpBuckets = 7;   // <1, <5, <20, <100, <500, <2000, >=2000 ms
+    nlohmann::json pumpHistogram() const;
+
 private:
     enum class State { Idle, Starting, Running, Degraded, Draining, Stopped, Failed };
     static const char* stateName(State s);
@@ -86,6 +99,7 @@ private:
     /// escape into Nim frames.
     static void callbackTrampoline(Context* ctx, int status, char* result, void* userData);
     void noteFinished(uint64_t id, bool ok);
+    void recordPump(int64_t ms, bool busy);
 
     // ── owned by the proxy thread ────────────────────────────────────────
     Context* m_ctx = nullptr;
@@ -103,6 +117,10 @@ private:
     std::atomic<int64_t>  m_callsTotal{0};
     std::atomic<int64_t>  m_callsFailed{0};
     std::atomic<int64_t>  m_heartbeatFailures{0};
+    std::atomic<int64_t>  m_pumpCalls{0};
+    std::atomic<int64_t>  m_pumpMaxMs{0};
+    std::atomic<int64_t>  m_pumpIdle[kPumpBuckets]{};
+    std::atomic<int64_t>  m_pumpBusy[kPumpBuckets]{};
     std::atomic<bool>     m_stopRequested{false};
     std::atomic<State>    m_state{State::Idle};
 
