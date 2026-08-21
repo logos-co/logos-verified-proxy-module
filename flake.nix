@@ -184,5 +184,12 @@
           (module.packages.${system} or {}) // {
             libverifproxy = libverifproxyFor system;
           });
+
+        # Spelled out rather than left to flow through `module //`, even though
+        # the value is identical: `ws sync-graph` decides dep-graph.nix's
+        # hasTests by GREPPING this file for a `checks =` line (scripts/ws:2745).
+        # Inheriting it silently records hasTests = false, and `ws test` then
+        # reports the repo as having no tests at all.
+        checks = module.checks or { };
       };
 }
