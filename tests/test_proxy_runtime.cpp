@@ -1,0 +1,385 @@
+// ProxyRuntime — the thread, the queue, the pump and the shutdown ordering.
+//
+// The mock queues completions and drains them ONLY from
+// processVerifProxyTasks, so these tests exercise the real cross-thread design
+// rather than a synchronous stand-in.
+
+#include <chrono>
+#include <thread>
+
+#include <logos_test.h>
+#include <nlohmann/json.hpp>
+
+#include "proxy_config.h"
+#include "proxy_runtime.h"
+#include "mocks/mock_libverifproxy.h"
+
+extern "C" {
+#include "lib/verifproxy.h"   // RET_* status codes
+}
+
+using json = nlohmann::json;
+using namespace std::chrono;
+
+namespace {
+
+ProxyConfig testConfig() {
+    ProxyConfig c;
+    c.network = "sepolia";
+    c.trustedBlockRoot = "0x" + std::string(64, 'a');
+    c.executionApiUrls = { "https://exec.example" };
+    c.beaconApiUrls    = { "https://beacon.example" };
+    c.callTimeoutMs    = 1500;
+    c.startTimeoutMs   = 5000;
+    c.drainTimeoutMs   = 500;
+    c.pumpIntervalMs   = 20;
+    c.keepAlive        = "off";      // most tests do not want heartbeat noise
+    return c;
+}
+
+bool contains(const std::vector<std::string>& v, const std::string& s) {
+    for (const auto& e : v) if (e == s) return true;
+    return false;
+}
+
+/// Index of the LAST occurrence of `s`, or -1.
+int lastIndexOf(const std::vector<std::string>& v, const std::string& s) {
+    for (int i = static_cast<int>(v.size()) - 1; i >= 0; --i)
+        if (v[static_cast<size_t>(i)] == s) return i;
+    return -1;
+}
+
+} // namespace
+
+LOGOS_TEST(runtime_start_and_stop_round_trip) {
+    auto t = LogosTestContext("verified_proxy_module");
+    mockReset();
+
+    ProxyRuntime rt(nullptr);
+    const auto r = rt.start(testConfig());
+    LOGOS_ASSERT_TRUE(r.success);
+    LOGOS_ASSERT_TRUE(rt.running());
+
+    const auto s = rt.stop();
+    LOGOS_ASSERT_TRUE(s.success);
+    LOGOS_ASSERT_FALSE(rt.running());
+}
+
+LOGOS_TEST(runtime_confines_every_c_call_to_one_non_caller_thread) {
+    // The invariant that rots silently. setupForeignThreadGc /
+    // tearDownForeignThreadGc are bound to startVerifProxy / stopVerifProxy, so
+    // start, stop, the pump and every call must share one thread — and it must
+    // not be the dispatch thread, because startVerifProxy blocks.
+    auto t = LogosTestContext("verified_proxy_module");
+    mockReset();
+
+    ProxyRuntime rt(nullptr);
+    LOGOS_ASSERT_TRUE(rt.start(testConfig()).success);
+    LOGOS_ASSERT_TRUE(rt.call("eth_blockNumber", json::array()).success);
+    rt.stop();
+
+    const auto proxyThread = mockThreadOf("startVerifProxy");
+    LOGOS_ASSERT_TRUE(proxyThread != std::thread::id{});
+    LOGOS_ASSERT_TRUE(proxyThread != std::this_thread::get_id());
+
+    // These are called on every cycle, so they must be recorded AND match.
+    for (const char* fn : { "processVerifProxyTasks", "proxyCall",
+                            "stopVerifProxy", "freeContext" }) {
+        LOGOS_ASSERT_TRUE(mockThreadOf(fn) != std::thread::id{});
+        LOGOS_ASSERT_TRUE(mockThreadOf(fn) == proxyThread);
+    }
+
+    // NimMain is once per PROCESS (std::call_once), so if an earlier test in
+    // this binary already started a proxy it will not have been re-recorded
+    // after mockReset(). Assert it only when it was actually observed here —
+    // an unconditional check would make this test order-dependent.
+    if (const auto nimMainThread = mockThreadOf("NimMain");
+        nimMainThread != std::thread::id{}) {
+        LOGOS_ASSERT_TRUE(nimMainThread == proxyThread);
+    }
+}
+
+LOGOS_TEST(runtime_never_calls_NimMain_a_second_time) {
+    // NimMain is process-global: a second call would re-initialise the Nim
+    // runtime underneath live GC state.
+    //
+    // Assert the DELTA, not the absolute count. std::call_once fires once per
+    // PROCESS, so whether this test sees 1 or 0 depends on whether an earlier
+    // test already started a proxy — the invariant that actually matters is
+    // that a restart adds none.
+    auto t = LogosTestContext("verified_proxy_module");
+    mockReset();
+
+    { ProxyRuntime rt(nullptr); rt.start(testConfig()); rt.stop(); }
+    const int afterFirst = t.cFunctionCallCount("NimMain");
+    { ProxyRuntime rt(nullptr); rt.start(testConfig()); rt.stop(); }
+    const int afterSecond = t.cFunctionCallCount("NimMain");
+
+    LOGOS_ASSERT_EQ(afterSecond, afterFirst);
+    LOGOS_ASSERT_LE(afterFirst, 1);
+}
+
+LOGOS_TEST(runtime_runs_the_blocking_prologue_off_the_callers_thread) {
+    // startVerifProxy blocks for an unbounded prologue. start() may block the
+    // CALLER — the latch is tripped by a different thread, so nothing starves —
+    // but it must never run the prologue inline.
+    auto t = LogosTestContext("verified_proxy_module");
+    mockReset();
+    t.mockCFunction("startVerifProxy_delay_ms").returns(250);
+
+    ProxyRuntime rt(nullptr);
+    const auto t0 = steady_clock::now();
+    const auto r = rt.start(testConfig());
+    const auto elapsed = duration_cast<milliseconds>(steady_clock::now() - t0);
+
+    LOGOS_ASSERT_TRUE(r.success);
+    LOGOS_ASSERT_GE(elapsed.count(), 200);                       // we did wait for it
+    LOGOS_ASSERT_TRUE(mockThreadOf("startVerifProxy") != std::this_thread::get_id());
+    rt.stop();
+}
+
+LOGOS_TEST(runtime_reports_a_null_start_and_refuses_calls_afterwards) {
+    auto t = LogosTestContext("verified_proxy_module");
+    mockReset();
+    t.mockCFunction("startVerifProxy_fail").returns(1);
+
+    ProxyRuntime rt(nullptr);
+    const auto r = rt.start(testConfig());
+    LOGOS_ASSERT_FALSE(r.success);
+    // The C API has no error out-param, so the message must say so rather than
+    // inventing a cause.
+    LOGOS_ASSERT_CONTAINS(r.error, "NULL");
+    LOGOS_ASSERT_FALSE(rt.running());
+
+    const auto c = rt.call("eth_blockNumber", json::array());
+    LOGOS_ASSERT_FALSE(c.success);
+    LOGOS_ASSERT_CONTAINS(c.error, "not running");
+    LOGOS_ASSERT_FALSE(t.cFunctionCalled("proxyCall"));
+}
+
+LOGOS_TEST(runtime_requires_a_pump_turn_to_complete_a_call) {
+    // Proves the queue really crosses threads: no completion can be delivered
+    // without processVerifProxyTasks running.
+    auto t = LogosTestContext("verified_proxy_module");
+    mockReset();
+
+    ProxyRuntime rt(nullptr);
+    LOGOS_ASSERT_TRUE(rt.start(testConfig()).success);
+
+    const int before = t.cFunctionCallCount("processVerifProxyTasks");
+    LOGOS_ASSERT_TRUE(rt.call("eth_blockNumber", json::array()).success);
+    const int after = t.cFunctionCallCount("processVerifProxyTasks");
+    LOGOS_ASSERT_GT(after, before);
+    rt.stop();
+}
+
+LOGOS_TEST(runtime_rejects_a_params_value_that_is_not_an_array) {
+    // Upstream does parseJson(params).getElems, which silently yields an empty
+    // list for a non-array — so the caller would get "parameters missing"
+    // instead of a useful message.
+    auto t = LogosTestContext("verified_proxy_module");
+    mockReset();
+
+    ProxyRuntime rt(nullptr);
+    LOGOS_ASSERT_TRUE(rt.start(testConfig()).success);
+    const auto r = rt.call("eth_getBalance", json::object({ { "a", 1 } }));
+    LOGOS_ASSERT_FALSE(r.success);
+    LOGOS_ASSERT_CONTAINS(r.error, "array");
+    rt.stop();
+}
+
+LOGOS_TEST(runtime_decodes_a_bare_json_encoded_result) {
+    // The library returns Json.encode(value) with no JSON-RPC envelope.
+    auto t = LogosTestContext("verified_proxy_module");
+    mockReset();
+    t.mockCFunction("proxyCall").returns("\"0x10d4f\"");
+
+    ProxyRuntime rt(nullptr);
+    LOGOS_ASSERT_TRUE(rt.start(testConfig()).success);
+    const auto r = rt.call("eth_blockNumber", json::array());
+    LOGOS_ASSERT_TRUE(r.success);
+    LOGOS_ASSERT_TRUE(r.value.is_string());
+    LOGOS_ASSERT_EQ(r.value.get<std::string>(), std::string("0x10d4f"));
+    rt.stop();
+}
+
+LOGOS_TEST(runtime_tolerates_the_non_json_error_payload) {
+    // A Result failure yields a RAW "errType: errMsg" string, while a failed
+    // Future yields a JSON-encoded one. Both must produce a readable error.
+    auto t = LogosTestContext("verified_proxy_module");
+    mockReset();
+    t.mockCFunction("proxyCall_status").returns(RET_ERROR);
+    t.mockCFunction("proxyCall").returns("VerificationError: unviable fork");
+
+    ProxyRuntime rt(nullptr);
+    LOGOS_ASSERT_TRUE(rt.start(testConfig()).success);
+    const auto r = rt.call("eth_blockNumber", json::array());
+    LOGOS_ASSERT_FALSE(r.success);
+    LOGOS_ASSERT_CONTAINS(r.error, "unviable fork");
+    rt.stop();
+}
+
+LOGOS_TEST(runtime_reports_an_unknown_method_without_dying) {
+    auto t = LogosTestContext("verified_proxy_module");
+    mockReset();
+    t.mockCFunction("proxyCall_status").returns(RET_DESER_ERROR);
+    t.mockCFunction("proxyCall").returns("unknown method");
+
+    ProxyRuntime rt(nullptr);
+    LOGOS_ASSERT_TRUE(rt.start(testConfig()).success);
+    const auto r = rt.call("eth_nonsense", json::array());
+    LOGOS_ASSERT_FALSE(r.success);
+    LOGOS_ASSERT_CONTAINS(r.error, "unknown method");
+    rt.stop();
+}
+
+LOGOS_TEST(runtime_times_out_safely_when_a_call_never_completes) {
+    // There is no per-call cancel in the C API, so a stalled future leaves the
+    // slot live forever. Joint ownership (waiter + CallBox) is what makes a
+    // late callback harmless; under ASan this test is the proof.
+    auto t = LogosTestContext("verified_proxy_module");
+    mockReset();
+    t.mockCFunction("proxyCall_status").returns(mockNeverCompletes());
+
+    ProxyConfig cfg = testConfig();
+    cfg.callTimeoutMs = 300;
+
+    ProxyRuntime rt(nullptr);
+    LOGOS_ASSERT_TRUE(rt.start(cfg).success);
+
+    const auto t0 = steady_clock::now();
+    const auto r = rt.call("eth_blockNumber", json::array());
+    const auto elapsed = duration_cast<milliseconds>(steady_clock::now() - t0);
+
+    LOGOS_ASSERT_FALSE(r.success);
+    LOGOS_ASSERT_CONTAINS(r.error, "timed out");
+    LOGOS_ASSERT_GE(elapsed.count(), 250);
+    rt.stop();   // must not crash on the abandoned slot
+}
+
+LOGOS_TEST(runtime_rejects_calls_beyond_the_in_flight_ceiling) {
+    // concurrency:"multi" spawns a QThread PER CALL, not a bounded pool, so
+    // without admission control a runaway caller becomes an OOM rather than an
+    // error string.
+    auto t = LogosTestContext("verified_proxy_module");
+    mockReset();
+    t.mockCFunction("proxyCall_status").returns(mockNeverCompletes());
+
+    ProxyConfig cfg = testConfig();
+    cfg.maxInFlight = 2;
+    cfg.callTimeoutMs = 400;
+
+    ProxyRuntime rt(nullptr);
+    LOGOS_ASSERT_TRUE(rt.start(cfg).success);
+
+    std::vector<std::thread> hold;
+    for (int i = 0; i < 2; ++i)
+        hold.emplace_back([&rt] { rt.call("eth_blockNumber", json::array()); });
+
+    // Give the pump time to dispatch both and raise m_inFlight.
+    std::this_thread::sleep_for(milliseconds(150));
+    const auto r = rt.call("eth_blockNumber", json::array());
+    LOGOS_ASSERT_FALSE(r.success);
+    LOGOS_ASSERT_CONTAINS(r.error, "in flight");
+
+    for (auto& th : hold) th.join();
+    rt.stop();
+}
+
+LOGOS_TEST(runtime_drains_before_stopping_and_frees_the_context_last) {
+    // stopVerifProxy sets ctx.stop, and processVerifProxyTasks checks it BEFORE
+    // polling — so anything still in flight when we stop can never complete.
+    // Draining first is therefore load-bearing, not tidiness.
+    auto t = LogosTestContext("verified_proxy_module");
+    mockReset();
+
+    ProxyRuntime rt(nullptr);
+    LOGOS_ASSERT_TRUE(rt.start(testConfig()).success);
+    LOGOS_ASSERT_TRUE(rt.call("eth_blockNumber", json::array()).success);
+    rt.stop();
+
+    const auto order = mockCallOrder();
+    LOGOS_ASSERT_TRUE(contains(order, "stopVerifProxy"));
+    LOGOS_ASSERT_TRUE(contains(order, "freeContext"));
+
+    const int lastPump = lastIndexOf(order, "processVerifProxyTasks");
+    const int stopAt   = lastIndexOf(order, "stopVerifProxy");
+    const int freeAt   = lastIndexOf(order, "freeContext");
+
+    LOGOS_ASSERT_LT(lastPump, stopAt);   // drained before stopping
+    LOGOS_ASSERT_LT(stopAt, freeAt);     // freed only after stopping
+    LOGOS_ASSERT_EQ(freeAt, static_cast<int>(order.size()) - 1);
+}
+
+LOGOS_TEST(runtime_releases_a_blocked_caller_when_the_proxy_stops) {
+    auto t = LogosTestContext("verified_proxy_module");
+    mockReset();
+    t.mockCFunction("proxyCall_status").returns(mockNeverCompletes());
+
+    ProxyConfig cfg = testConfig();
+    cfg.callTimeoutMs = 10000;   // far longer than the test would tolerate
+    cfg.drainTimeoutMs = 200;
+
+    ProxyRuntime rt(nullptr);
+    LOGOS_ASSERT_TRUE(rt.start(cfg).success);
+
+    StdLogosResult captured;
+    std::thread caller([&] { captured = rt.call("eth_blockNumber", json::array()); });
+    std::this_thread::sleep_for(milliseconds(150));
+
+    const auto t0 = steady_clock::now();
+    rt.stop();
+    caller.join();
+    const auto elapsed = duration_cast<milliseconds>(steady_clock::now() - t0);
+
+    LOGOS_ASSERT_FALSE(captured.success);
+    LOGOS_ASSERT_CONTAINS(captured.error, "shutting down");
+    LOGOS_ASSERT_LT(elapsed.count(), 5000);   // nobody waits out callTimeoutMs
+}
+
+LOGOS_TEST(runtime_pump_does_not_busy_spin_while_idle) {
+    // The one CPU assertion stable enough for CI: bounded, not 10^6.
+    auto t = LogosTestContext("verified_proxy_module");
+    mockReset();
+
+    ProxyConfig cfg = testConfig();
+    cfg.pumpIntervalMs = 50;
+
+    ProxyRuntime rt(nullptr);
+    LOGOS_ASSERT_TRUE(rt.start(cfg).success);
+    std::this_thread::sleep_for(milliseconds(500));
+    const int pumps = t.cFunctionCallCount("processVerifProxyTasks");
+    rt.stop();
+
+    LOGOS_ASSERT_GT(pumps, 2);
+    LOGOS_ASSERT_LT(pumps, 100);
+}
+
+LOGOS_TEST(runtime_heartbeat_issues_eth_syncing_only_when_enabled) {
+    // processVerifProxyTasks only poll()s while pendingCalls > 0, so an idle
+    // proxy does not advance its light client at all. eth_syncing is the
+    // cheapest keep-alive: it drives beaconSync() and touches no execution
+    // backend.
+    {
+        auto t = LogosTestContext("verified_proxy_module");
+        mockReset();
+        ProxyConfig cfg = testConfig();
+        cfg.keepAlive = "interval";
+        cfg.keepAliveIntervalMs = 100;
+
+        ProxyRuntime rt(nullptr);
+        LOGOS_ASSERT_TRUE(rt.start(cfg).success);
+        std::this_thread::sleep_for(milliseconds(600));
+        rt.stop();
+        LOGOS_ASSERT_GT(t.cFunctionCallCount("proxyCall:eth_syncing"), 1);
+    }
+    {
+        auto t = LogosTestContext("verified_proxy_module");
+        mockReset();
+        ProxyRuntime rt(nullptr);
+        LOGOS_ASSERT_TRUE(rt.start(testConfig()).success);   // keepAlive "off"
+        std::this_thread::sleep_for(milliseconds(400));
+        rt.stop();
+        LOGOS_ASSERT_EQ(t.cFunctionCallCount("proxyCall:eth_syncing"), 0);
+    }
+}
