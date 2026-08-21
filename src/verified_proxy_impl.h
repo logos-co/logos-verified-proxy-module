@@ -53,7 +53,7 @@ public:
     ///   "logLevel": "INFO", "logFormat": "Json",
     ///   "tuning": { "maxBlockWalk": 1000, "headerStoreLen": 256 },
     ///   "callTimeoutMs": 30000, "startTimeoutMs": 120000,
-    ///   "keepAlive": "interval", "keepAliveIntervalMs": 1000,
+    ///   "keepAlive": "interval", "keepAliveIntervalMs": 1000,   // do not use "off"
     ///   "maxInFlight": 64, "autoStart": false
     /// }
     /// @endcode
@@ -115,7 +115,11 @@ public:
     /// Returns the decoded result value on success.
     StdLogosResult rpc(const std::string& method, const LogosList& params);
 
-    /// Current verified head block number, as a hex quantity string.
+    /// Current verified head block number.
+    ///
+    /// Returns a JSON **number**, not a hex quantity string — upstream's
+    /// encoding is not uniform (`ethChainId` and `ethGasPrice` do return hex
+    /// strings). Measured against sepolia, not inferred from the JSON-RPC spec.
     StdLogosResult ethBlockNumber();
 
     /// The chain id the proxy is configured for, as a hex quantity string.

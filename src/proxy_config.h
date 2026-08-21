@@ -60,6 +60,14 @@ struct ProxyConfig {
     /// "off" | "interval" | "continuous". `processVerifProxyTasks` only polls
     /// while `pendingCalls > 0`, so an idle proxy does not advance its light
     /// client at all — the heartbeat is what keeps chronos turning.
+    ///
+    /// MEASURED on sepolia, 5 minutes idle (2026-08-20):
+    ///   off        head 11532988 -> 11532949  (BACKWARDS 39 blocks), 3186ms
+    ///   continuous head 11532988 -> 11533012  (+24, i.e. tracking), 0ms
+    ///
+    /// So "off" is not merely a cold start: the reported head REGRESSES, which
+    /// a consumer polling block numbers will see as time running backwards.
+    /// Treat it as a diagnostic setting, not a supported deployment.
     std::string keepAlive = "interval";
     int64_t keepAliveIntervalMs = 1000;
     bool autoStart = false;

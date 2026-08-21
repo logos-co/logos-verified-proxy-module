@@ -109,18 +109,48 @@ Neither is validated upstream. Everything else — bad JSON, a missing
 `trustedBlockRoot`, a malformed URL — is already caught and turned into a
 `NULL` return, so validating it here only improves the error message.
 
-## The keep-alive, and a caveat worth knowing
+## The keep-alive is not optional
 
 `processVerifProxyTasks` only advances chronos while a call is in flight, so an
-**idle proxy does not advance its light client**. The heartbeat
+**idle proxy does not advance its light client at all**. The heartbeat
 (`keepAlive: "interval"`, the default) issues `eth_syncing`, which drives the
-sync loop and touches no execution backend. `keepAlive: "continuous"` keeps it
-turning permanently; `"off"` accepts cold starts.
+sync loop and touches no execution backend.
 
-Sync observability is limited by the library: there is no exported getter for
-the finalized/optimistic slot, and `eth_syncing` returns a hardcoded `false`.
-`status().state == "degraded"` therefore means "up, but heartbeats are failing",
-inferred from those calls' error strings.
+Measured on sepolia over a 5-minute idle:
+
+| | `keepAlive: "off"` | `keepAlive: "continuous"` |
+|---|---|---|
+| head at start | 11532988 | 11532988 |
+| head after 5 min idle | **11532949** — *39 blocks backwards* | 11533012 (+24, tracking) |
+| latency of that call | 3186 ms | 0 ms |
+| light-client headers tracked | 3 | 26 |
+
+`"off"` does not merely go stale: the reported head **regresses**, so a consumer
+polling block numbers sees time run backwards. Treat it as a diagnostic
+setting, not a deployment option.
+
+## Known limitations
+
+* **State reads need a provider with a wide proof window.** `eth_getBalance`,
+  `eth_getCode` and `eth_getTransactionCount` resolve their proof against the
+  light client's *finalized* header, which lags the chain head. Against free
+  public sepolia providers this exceeds their `eth_getProof` window and the call
+  fails with `distance to target block exceeds maximum proof window`; the
+  backend is then marked ineligible for `GetProof` until it recovers. Reads that
+  need no proof (`eth_blockNumber`, `eth_chainId`, `eth_gasPrice`,
+  `eth_getBlockByNumber`) work fine. Point `archiveUrls` at a provider that
+  serves historical proofs.
+* **Return encodings are not uniform.** `eth_blockNumber` answers a JSON
+  *number*; `eth_chainId` and `eth_gasPrice` answer hex *strings*;
+  `eth_getBlockByNumber` and `eth_syncing` answer objects. There is no
+  JSON-RPC envelope — the value is returned bare.
+* **`logLevel` is validated but inert.** The library logs
+  `Logging configuration options not enabled in the current build`, so the level
+  is not applied at runtime. It still has to be whitelisted, because an invalid
+  value reaches a `quit()` before that point.
+* Sync observability is limited: there is no exported getter for the
+  finalized/optimistic slot. `status().state == "degraded"` means "up, but
+  heartbeats are failing", inferred from their error strings.
 
 ## Development
 
