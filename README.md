@@ -60,7 +60,8 @@ impossible without it. (Infura notably does not.)
 |---|---|
 | `configure(config)` | Validate and store config. Synchronous; starts nothing. |
 | `getConfig()` | Effective config, credentials redacted. |
-| `start()` / `stop()` | Blocking, bounded by `startTimeoutMs` / `drainTimeoutMs`. |
+| `start()` | Blocks until the light client initialises, bounded by `startTimeoutMs`. |
+| `stop()` | Drains, then releases. See the note on `drainTimeoutMs` below — it is not a tight bound. |
 | `ok()` / `status()` | Health probe and full state. `status()` never blocks on the proxy thread. |
 | `rpc(method, params)` | Any method the proxy supports. `params` is a JSON-RPC array. |
 | `ethBlockNumber()`, `ethGetBalance(...)`, `ethCall(...)`, … | Typed wrappers over the same path. |
@@ -87,7 +88,8 @@ is enabled by setting `opExecutionApiUrls` (there is no `op-*` network name in
 the library's JSON config — that is a CLI-only option on the standalone binary).
 
 Module-side knobs: `callTimeoutMs` (30000), `startTimeoutMs` (120000),
-`drainTimeoutMs` (2000), `pumpIntervalMs` (50), `maxInFlight` (64),
+`drainTimeoutMs` (2000 — a polling bound, see below), `pumpIntervalMs` (50),
+`maxInFlight` (64),
 `keepAlive` (`off` | `interval` | `continuous`), `keepAliveIntervalMs` (1000),
 `autoStart` (false). Upstream tuning lives under `tuning`.
 

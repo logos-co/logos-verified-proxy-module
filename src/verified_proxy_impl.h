@@ -74,7 +74,17 @@ public:
     StdLogosResult start();
 
     /// Stop the proxy: drain in-flight calls, then release the context.
-    /// Blocks up to `drainTimeoutMs`. Also emits `proxyStopped`.
+    ///
+    /// `drainTimeoutMs` (default 2000) bounds when the drain stops STARTING new
+    /// turns of the library's task pump — not when this returns. The deadline is
+    /// checked between calls into the library, and one such call was measured
+    /// blocking for up to 3.3s, so budget `drainTimeoutMs` plus up to one pump
+    /// duration. Bounded, but not tight: a measured stop() took 1102ms.
+    ///
+    /// Callers still blocked in an RPC call are released with
+    /// "proxy shutting down" rather than waiting out their own timeout.
+    ///
+    /// Also emits `proxyStopped`.
     StdLogosResult stop();
 
     /// True when the proxy is running and its last heartbeat succeeded.
