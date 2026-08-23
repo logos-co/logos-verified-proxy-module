@@ -8,6 +8,7 @@
 
 #include "proxy_config.h"
 #include "proxy_runtime.h"
+#include "rpc_http_server.h"
 
 // Generated at build time. Only needed where modules() is used; included here
 // so the impl header the generator parses stays free of codegen types.
@@ -130,10 +131,44 @@ LogosMap VerifiedProxyImpl::getConfig() {
 StdLogosResult VerifiedProxyImpl::start() {
     if (!m_configured)
         return { false, {}, "not configured — call configure() first" };
-    return m_rt->start(*m_cfg);
+
+    auto r = m_rt->start(*m_cfg);
+    if (!r.success || !m_cfg->httpEnabled) return r;
+
+    // Forward every HTTP request through the SAME verified path the typed
+    // methods use, so there is one verification path and one error shape.
+    m_http = std::make_unique<RpcHttpServer>(
+        [this](const std::string& method, const nlohmann::json& params) {
+            return m_rt->call(method, params);
+        });
+
+    std::string httpErr;
+    if (!m_http->start(m_cfg->httpHost,
+                       static_cast<uint16_t>(m_cfg->httpPort), httpErr)) {
+        // Fail the whole start rather than leave a half-started module: a
+        // caller that asked for an endpoint and silently did not get one would
+        // point a wallet at a dead port.
+        m_http.reset();
+        m_rt->stop();
+        return { false, {}, "proxy started but the JSON-RPC endpoint could not: " + httpErr };
+    }
+
+    r.value = nlohmann::json{ { "chainId", m_cfg->expectedChainId() },
+                              { "endpoint", m_http->endpoint() } };
+    return r;
 }
 
-StdLogosResult VerifiedProxyImpl::stop() { return m_rt->stop(); }
+StdLogosResult VerifiedProxyImpl::stop() {
+    // Stop accepting HTTP first: otherwise a request in flight would reach a
+    // runtime that is already draining and get "proxy shutting down" for no
+    // reason the caller can act on.
+    if (m_http) { m_http->stop(); m_http.reset(); }
+    return m_rt->stop();
+}
+
+std::string VerifiedProxyImpl::localEndpoint() {
+    return m_http ? m_http->endpoint() : std::string();
+}
 
 bool VerifiedProxyImpl::ok() { return m_rt->running(); }
 
@@ -143,6 +178,10 @@ LogosMap VerifiedProxyImpl::status() {
     else if (s["state"] == "uninitialized") s["state"] = "configured";
     s["moduleVersion"] = VERIFIED_PROXY_MODULE_VERSION;
     s["libraryVersion"] = VERIFIED_PROXY_NIMBUS_REV;
+    s["httpServer"] = json{
+        { "running",  m_http && m_http->running() },
+        { "endpoint", m_http ? m_http->endpoint() : std::string() },
+    };
     return s;
 }
 

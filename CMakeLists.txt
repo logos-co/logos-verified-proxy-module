@@ -22,11 +22,21 @@ logos_module(
         src/proxy_config.cpp
         src/proxy_runtime.h
         src/proxy_runtime.cpp
+        src/rpc_http_server.h
+        src/rpc_http_server.cpp
     EXTERNAL_LIBS
         verifproxy
     INCLUDE_DIRS
         lib
 )
+
+# Embedded JSON-RPC endpoint: libmicrohttpd, the same server openmetrics-module
+# uses. libverifproxy deliberately ships none — the HTTP/WS frontend lives only
+# in the standalone nimbus_verified_proxy binary and its symbols are absent from
+# the archive we link — so the endpoint is ours.
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(MHD REQUIRED IMPORTED_TARGET libmicrohttpd)
+target_link_libraries(verified_proxy_module_module_plugin PRIVATE PkgConfig::MHD)
 
 # Inject the module version from metadata.json so moduleVersion() reports it
 # without parsing JSON at runtime.

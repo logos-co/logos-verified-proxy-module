@@ -16,17 +16,25 @@
     "dependencies": [],
     "include": [],
     "capabilities": [],
-
     "nix": {
         "packages": {
-            "build": [],
-            "runtime": ["nlohmann_json"]
+            "build": [
+                "pkg-config"
+            ],
+            "runtime": [
+                "nlohmann_json",
+                "libmicrohttpd"
+            ]
         },
         "external_libraries": [
-            { "name": "verifproxy" }
+            {
+                "name": "verifproxy"
+            }
         ],
         "cmake": {
-            "extra_include_dirs": ["lib"]
+            "extra_include_dirs": [
+                "lib"
+            ]
         }
     }
 }

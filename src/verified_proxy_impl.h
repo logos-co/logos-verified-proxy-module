@@ -10,6 +10,7 @@
 
 struct ProxyConfig;
 class ProxyRuntime;
+class RpcHttpServer;
 
 /// Light-client-verified Ethereum JSON-RPC.
 ///
@@ -54,6 +55,7 @@ public:
     ///   "tuning": { "maxBlockWalk": 1000, "headerStoreLen": 256 },
     ///   "callTimeoutMs": 30000, "startTimeoutMs": 120000,
     ///   "keepAlive": "interval", "keepAliveIntervalMs": 1000,   // do not use "off"
+    ///   "httpServer": { "enabled": false, "host": "127.0.0.1", "port": 8545 },
     ///   "maxInFlight": 64, "autoStart": false
     /// }
     /// @endcode
@@ -111,6 +113,20 @@ public:
 
     /// The nimbus-eth1 revision this module was built against.
     std::string libraryVersion();
+
+    /// URL of this module's own JSON-RPC endpoint, or "" when it is not
+    /// running (`httpServer.enabled` defaults to false).
+    ///
+    /// This is the integration seam for anything that speaks plain JSON-RPC:
+    /// hand it to `eth_rpc_module`'s `ChainConfig.endpoint`, or to ethers /
+    /// viem / cast, and their reads become light-client-verified without any
+    /// of them knowing this module exists.
+    ///
+    /// Note the library itself ships no server — `libverifproxy` never imports
+    /// `json_rpc_frontend`, and its symbols are absent from the archive. This
+    /// endpoint is the module's, forwarding to the same verified `proxyCall`
+    /// path the typed methods use.
+    std::string localEndpoint();
 
     // ── Verified JSON-RPC ────────────────────────────────────────────────
 
@@ -173,5 +189,6 @@ private:
     // to derive the module's contract — stays free of the FFI and config types.
     std::unique_ptr<ProxyConfig> m_cfg;
     std::unique_ptr<ProxyRuntime> m_rt;
+    std::unique_ptr<RpcHttpServer> m_http;
     bool m_configured = false;
 };

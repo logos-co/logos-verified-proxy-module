@@ -80,6 +80,54 @@ positional parameter**, `optimisticStateFetch` (a bool) — an upstream extensio
 to the standard JSON-RPC signature. The typed wrappers supply it; anything
 calling `rpc()` with a hand-built params array must too.
 
+## The JSON-RPC endpoint
+
+`libverifproxy` deliberately ships **no** server — `library/verifproxy.nim`
+imports `json_rpc_backend` (the client it calls providers with) and the
+in-process `engine/rpc_frontend`, but never `json_rpc_frontend`; the HTTP/WS
+server exists only in the standalone `nimbus_verified_proxy` binary, and its
+symbols are absent from the archive we link. So this module provides one.
+
+Off by default — a module should not open a listening socket unless asked:
+
+```json
+{ "httpServer": { "enabled": true, "host": "127.0.0.1", "port": 8545 } }
+```
+
+`localEndpoint()` returns the URL (or `""`), and `status().httpServer` reports
+it. Every request is forwarded through the **same** verified `proxyCall` path
+the typed methods use — one verification path, one error shape.
+
+```bash
+curl -s -X POST -H 'content-type: application/json'   --data '{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}'   http://127.0.0.1:8545
+```
+
+Point ethers, viem, cast or `eth_rpc_module`'s `ChainConfig.endpoint` at that
+URL and their reads become light-client-verified without any of them knowing
+this module exists.
+
+Two adaptations make that actually true, rather than nearly true:
+
+* **`eth_call`, `eth_estimateGas` and `eth_createAccessList` (and their `op_`
+  twins) take a third positional parameter upstream**, `optimisticStateFetch`,
+  which the JSON-RPC spec does not have. Every stock client sends two and the
+  library answers `parameters missing`. The endpoint appends the default, and
+  leaves an explicitly-supplied third parameter alone.
+* **Bare-number results are rendered as hex quantities.** Upstream's encoding is
+  not uniform: `eth_chainId` and `eth_gasPrice` answer hex strings but
+  `eth_blockNumber` answers a JSON number, which no client expects. Confined to
+  this layer — `rpc()` and the typed methods still return exactly what the
+  library produced.
+
+Supported: batches, notifications (dispatched, no response), and the reserved
+error codes — `-32700` parse, `-32600` invalid request, `-32601` method not
+found, `-32602` invalid params, `-32000` verification/backend failure.
+
+**It binds loopback by default and refuses anything but POST.** This endpoint
+answers *state* queries, so exposing it beyond `127.0.0.1` is a deliberate act.
+There is no authentication: treat a non-loopback bind as publishing an open RPC
+node.
+
 ## Configuration
 
 Required: `trustedBlockRoot` (`0x` + 64 hex), `executionApiUrls`,
@@ -89,7 +137,7 @@ the library's JSON config — that is a CLI-only option on the standalone binary
 
 Module-side knobs: `callTimeoutMs` (30000), `startTimeoutMs` (120000),
 `drainTimeoutMs` (2000 — a polling bound, see below), `pumpIntervalMs` (50),
-`maxInFlight` (64),
+`maxInFlight` (64), `httpServer` (see above),
 `keepAlive` (`off` | `interval` | `continuous`), `keepAliveIntervalMs` (1000),
 `autoStart` (false). Upstream tuning lives under `tuning`.
 

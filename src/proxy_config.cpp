@@ -231,6 +231,19 @@ bool ProxyConfig::fromJson(const json& in, ProxyConfig& out, std::string& err) {
     if (!readBool(in, "autoStart",          out.autoStart,           err)) return false;
     if (!readEnum(in, "keepAlive", kKeepAliveModes(), out.keepAlive, err)) return false;
 
+    const json http = in.value("httpServer", json::object());
+    if (!http.is_object()) { err = "'httpServer' must be an object"; return false; }
+    if (!readBool(http, "enabled", out.httpEnabled, err)) return false;
+    if (!readInt(http, "port", out.httpPort, err)) return false;
+    if (http.contains("host")) {
+        if (!http["host"].is_string()) { err = "'httpServer.host' must be a string"; return false; }
+        out.httpHost = http["host"].get<std::string>();
+    }
+    if (out.httpEnabled && (out.httpPort < 1 || out.httpPort > 65535)) {
+        err = "'httpServer.port' must be in 1..65535 (got " + std::to_string(out.httpPort) + ")";
+        return false;
+    }
+
     if (out.callTimeoutMs <= 0)  { err = "'callTimeoutMs' must be positive";  return false; }
     if (out.startTimeoutMs <= 0) { err = "'startTimeoutMs' must be positive"; return false; }
     if (out.maxInFlight <= 0)    { err = "'maxInFlight' must be positive";    return false; }
@@ -298,6 +311,7 @@ json ProxyConfig::redacted() const {
     j["keepAlive"]           = keepAlive;
     j["keepAliveIntervalMs"] = keepAliveIntervalMs;
     j["autoStart"]           = autoStart;
+    j["httpServer"] = { { "enabled", httpEnabled }, { "host", httpHost }, { "port", httpPort } };
     return j;
 }
 

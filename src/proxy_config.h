@@ -77,6 +77,15 @@ struct ProxyConfig {
     int64_t keepAliveIntervalMs = 1000;
     bool autoStart = false;
 
+    /// Optional JSON-RPC 2.0 endpoint in front of the proxy.
+    ///
+    /// Off by default: a module should not open a listening socket unless
+    /// asked. Defaults to loopback when enabled — this endpoint serves chain
+    /// state, so binding it to 0.0.0.0 is a deliberate act, not a default.
+    bool httpEnabled = false;
+    std::string httpHost = "127.0.0.1";
+    int64_t httpPort = 8545;
+
     /// Parse and validate. Returns false and fills `err` with a specific,
     /// actionable message on the first problem found.
     static bool fromJson(const nlohmann::json& in, ProxyConfig& out, std::string& err);
