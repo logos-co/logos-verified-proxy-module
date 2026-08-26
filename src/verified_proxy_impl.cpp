@@ -114,10 +114,21 @@ StdLogosResult VerifiedProxyImpl::configure(const LogosMap& config) {
         std::error_code ec;
         fs::create_directories(instancePersistencePath(), ec);
         std::ofstream f(fs::path(instancePersistencePath()) / "config.json");
-        // Persist the ORIGINAL, not the redacted view — this file is the
-        // module's private state under a host-owned directory, and a redacted
-        // copy would be useless on restart.
-        if (f) f << config.dump(2);
+        // Persist the RESOLVED config, not the caller's input and not the
+        // redacted view.
+        //
+        // Not redacted, because this file is the module's private state under a
+        // host-owned directory and a masked copy would be useless on restart.
+        //
+        // Resolved rather than as-supplied, so what comes back is what actually
+        // ran. Persisting `{"network": "mainnet", "trustedBlockRoot": "…"}`
+        // verbatim would re-derive the endpoints on every load, and a later
+        // change to the default table would silently move a running deployment
+        // onto different providers — which is not a trust problem, since
+        // providers are untrusted by construction, but it does decide whether
+        // eth_getProof works: an archive endpoint answers proofs at the
+        // finalized header, a pruning one does not.
+        if (f) f << cfg.raw().dump(2);
     }
     return { true, {}, "" };
 }
@@ -139,12 +150,21 @@ LogosMap VerifiedProxyImpl::defaultConfig(const std::string& network) {
     // exactly what configure() would produce for this network — including the
     // endpoint defaults it fills in — rather than a second, drifting copy of
     // the same defaults written out by hand.
+    // Seed a syntactically valid placeholder root purely to get PAST
+    // validation — fromJson requires one, deliberately — then blank it in the
+    // result. The point of the round trip is that what comes back is exactly
+    // what configure() would produce for this network, endpoint defaults
+    // included, rather than a second copy of the same defaults written by hand.
     ProxyConfig cfg;
     std::string err;
     json seed = json::object();
     seed["network"] = network;
+    seed["trustedBlockRoot"] = "0x" + std::string(64, '0');
     if (!ProxyConfig::fromJson(seed, cfg, err)) return json::object();
-    return cfg.raw();
+
+    json out = cfg.raw();
+    out["trustedBlockRoot"] = "";
+    return out;
 }
 
 // ── Lifecycle ───────────────────────────────────────────────────────────────

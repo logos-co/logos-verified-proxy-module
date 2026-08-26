@@ -359,3 +359,37 @@ LOGOS_TEST(raw_config_round_trips_through_configure) {
     LOGOS_ASSERT_EQ(second.httpEnabled, first.httpEnabled);
     LOGOS_ASSERT_EQ(second.httpPort, first.httpPort);
 }
+
+LOGOS_TEST(default_config_is_complete_and_startable_once_a_root_is_added) {
+    // Regression: the first version seeded only `network` and ran it through
+    // fromJson, which REQUIRES a trusted root — so it failed validation and
+    // returned {} for every network. It looked right and produced nothing.
+    for (const auto& p : networkProfiles()) {
+        ProxyConfig probe;
+        std::string err;
+
+        // Stand in for VerifiedProxyImpl::defaultConfig()'s round trip, which
+        // is where the bug lived: seed + validate + blank the root.
+        json seed{ { "network", p.name },
+                   { "trustedBlockRoot", "0x" + std::string(64, '0') } };
+        LOGOS_ASSERT_TRUE(ProxyConfig::fromJson(seed, probe, err));
+
+        json tmpl = probe.raw();
+        tmpl["trustedBlockRoot"] = "";
+        LOGOS_ASSERT_TRUE(!tmpl.empty());
+        LOGOS_ASSERT_EQ(tmpl["network"].get<std::string>(), p.name);
+        LOGOS_ASSERT_EQ(tmpl["trustedBlockRoot"].get<std::string>(), std::string(""));
+        if (!p.beaconApiUrl.empty())
+            LOGOS_ASSERT_EQ(tmpl["beaconApiUrls"][0].get<std::string>(), p.beaconApiUrl);
+
+        // The template minus its empty root must be rejected...
+        ProxyConfig rejected;
+        LOGOS_ASSERT_FALSE(ProxyConfig::fromJson(tmpl, rejected, err));
+        // ...and accepted again the moment a real root is filled in, which is
+        // the whole workflow the template exists to support.
+        tmpl["trustedBlockRoot"] = "0x" + std::string(64, 'b');
+        ProxyConfig accepted;
+        LOGOS_ASSERT_TRUE(ProxyConfig::fromJson(tmpl, accepted, err));
+        LOGOS_ASSERT_EQ(err, std::string(""));
+    }
+}
