@@ -217,6 +217,15 @@ LogosMap VerifiedProxyImpl::status() {
     json s = m_rt->statusSnapshot();
     if (!m_configured) s["state"] = "uninitialized";
     else if (s["state"] == "uninitialized") s["state"] = "configured";
+
+    // ProxyRuntime only learns the config at start(), so before the first run
+    // its snapshot carries a DEFAULT-constructed one — reporting network
+    // "mainnet" and chainId 1 for a module configured for something else.
+    // The impl's config is the authority whenever it has one.
+    if (m_configured && m_cfg) {
+        s["network"] = m_cfg->network;
+        s["chainId"] = m_cfg->expectedChainId();
+    }
     s["moduleVersion"] = VERIFIED_PROXY_MODULE_VERSION;
     s["libraryVersion"] = VERIFIED_PROXY_NIMBUS_REV;
     s["httpServer"] = json{

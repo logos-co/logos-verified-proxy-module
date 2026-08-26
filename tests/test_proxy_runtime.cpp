@@ -575,3 +575,26 @@ LOGOS_TEST(runtime_restart_does_not_inherit_the_previous_runs_head) {
     LOGOS_ASSERT_EQ(s["head"]["blockNumber"].get<std::string>(), std::string(""));
     LOGOS_ASSERT_EQ(s["head"]["updatedAt"].get<int64_t>(), 0);
 }
+
+LOGOS_TEST(runtime_status_reports_a_default_network_before_any_start) {
+    // Documents WHY VerifiedProxyImpl::status() overrides network/chainId from
+    // its own config: ProxyRuntime is only handed a config by start(), so until
+    // then its snapshot describes a default-constructed one. A panel that
+    // trusted this directly showed "chain 1 / mainnet" for a module configured
+    // for sepolia, and warned the operator about a mismatch that did not exist.
+    auto t = LogosTestContext("verified_proxy_module");
+    mockReset();
+
+    ProxyRuntime rt(nullptr);
+    const json s = rt.statusSnapshot();
+    LOGOS_ASSERT_EQ(s["network"].get<std::string>(), std::string("mainnet"));
+    LOGOS_ASSERT_EQ(s["chainId"].get<int64_t>(), 1);
+
+    // After a start with a real config it reflects that config.
+    ProxyConfig cfg = testConfig();          // sepolia
+    LOGOS_ASSERT_TRUE(rt.start(cfg).success);
+    const json after = rt.statusSnapshot();
+    rt.stop();
+    LOGOS_ASSERT_EQ(after["network"].get<std::string>(), std::string("sepolia"));
+    LOGOS_ASSERT_EQ(after["chainId"].get<int64_t>(), 11155111);
+}
