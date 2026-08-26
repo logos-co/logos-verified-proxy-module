@@ -63,6 +63,7 @@ impossible without it. (Infura notably does not.)
 | `start()` | Blocks until the light client initialises, bounded by `startTimeoutMs`. |
 | `stop()` | Drains, then releases. See the note on `drainTimeoutMs` below — it is not a tight bound. |
 | `ok()` / `status()` | Health probe and full state. `status()` never blocks on the proxy thread. |
+| `supportedNetworks()` | The accepted networks with their chain ids and a default endpoint pair. Build a UI selector from this, not a hardcoded list. |
 | `fetchFinalizedRoot(beaconUrl)` | Convenience: asks a beacon node for its current finalized root. **Not** a trust anchor — see below. |
 | `rpc(method, params)` | Any method the proxy supports. `params` is a JSON-RPC array. |
 | `ethBlockNumber()`, `ethGetBalance(...)`, `ethCall(...)`, … | Typed wrappers over the same path. |

@@ -20,6 +20,31 @@
 ///     writes to stderr and `quit 1`s.
 ///
 /// So both are whitelisted here, before the value can ever cross the FFI.
+/// One supported network: the whitelist entry, its chain id, and a suggested
+/// public endpoint pair.
+///
+/// ONE table, because these three facts must not drift apart. `network` is a
+/// value that reaches `quit()` inside Nim when upstream does not recognise it,
+/// so the whitelist is a safety control; a chain id missing for an accepted
+/// network would silently disable the post-start chain check; and a default
+/// endpoint pointing at the wrong chain builds a config that cannot bootstrap.
+struct NetworkProfile {
+    std::string name;
+    int64_t     chainId = 0;
+    /// Empty when no public endpoint is known to meet the requirements. A
+    /// beacon endpoint must serve the light-client REST API, and an execution
+    /// endpoint must support `eth_getProof` — verification is impossible
+    /// without either, so a plausible-but-unqualified URL is worse than none.
+    std::string beaconApiUrl;
+    std::string executionApiUrl;
+};
+
+/// The supported networks, in the order a UI should offer them.
+const std::vector<NetworkProfile>& networkProfiles();
+
+/// Lookup by name, or nullptr when the network is not supported.
+const NetworkProfile* networkProfile(const std::string& name);
+
 struct ProxyConfig {
     // ── Required ─────────────────────────────────────────────────────────
     std::string network = "mainnet";     // -> eth2Network

@@ -189,6 +189,19 @@ LogosMap VerifiedProxyImpl::status() {
 std::string VerifiedProxyImpl::moduleVersion()  { return VERIFIED_PROXY_MODULE_VERSION; }
 std::string VerifiedProxyImpl::libraryVersion() { return VERIFIED_PROXY_NIMBUS_REV; }
 
+LogosList VerifiedProxyImpl::supportedNetworks() {
+    LogosList out = json::array();
+    for (const auto& p : networkProfiles()) {
+        out.push_back(json{
+            { "name",            p.name },
+            { "chainId",         p.chainId },
+            { "beaconApiUrl",    p.beaconApiUrl },
+            { "executionApiUrl", p.executionApiUrl },
+        });
+    }
+    return out;
+}
+
 StdLogosResult VerifiedProxyImpl::fetchFinalizedRoot(const std::string& beaconUrl) {
     const std::string base = beacon_client::trim(beaconUrl);
     if (base.empty()) return { false, {}, "beacon URL is required" };

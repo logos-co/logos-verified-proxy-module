@@ -128,6 +128,25 @@ public:
     /// path the typed methods use.
     std::string localEndpoint();
 
+    /// The networks this module accepts, each with its chain id and a
+    /// suggested public endpoint pair.
+    ///
+    /// A UI should build its network selector from THIS rather than hardcoding
+    /// a list: `network` is one of exactly two config fields whose value
+    /// reaches a `quit()` inside the Nim library when upstream does not
+    /// recognise it, taking the whole host process down, so a UI list that
+    /// drifts from the module's whitelist is a crash waiting to happen.
+    ///
+    /// Returns a list of `{"name", "chainId", "beaconApiUrl",
+    /// "executionApiUrl"}`. The two URLs are a convenience for prefilling a
+    /// form and may be EMPTY, which means no public endpoint is known to meet
+    /// the requirements for that network — a beacon endpoint has to serve the
+    /// light-client REST API and an execution endpoint has to support
+    /// `eth_getProof`. Empty is deliberate: a plausible URL that cannot
+    /// actually verify is worse than none, because it fails long after the
+    /// choice that caused it.
+    LogosList supportedNetworks();
+
     /// Fetch the current finalized beacon block root from `beaconUrl`.
     ///
     /// A convenience for operators who have no root to hand: it queries

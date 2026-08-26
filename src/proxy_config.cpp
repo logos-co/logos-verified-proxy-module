@@ -7,12 +7,52 @@
 
 using json = nlohmann::json;
 
+// The one table. Endpoint defaults are LIVE-VERIFIED, not guessed: a beacon
+// URL appears here only if `/eth/v1/beacon/light_client/bootstrap/<root>`
+// answered 200 (many public beacon nodes serve the standard API but not the
+// light_client namespace), and an execution URL only if `eth_getProof`
+// returned a result rather than an error.
+const std::vector<NetworkProfile>& networkProfiles() {
+    static const std::vector<NetworkProfile> v{
+        { "mainnet", 1,
+          "https://lodestar-mainnet.chainsafe.io",
+          // drpc is archive-capable: it answered eth_getProof deep in history,
+          // where the pruning free tiers refuse anything past ~head-1024. That
+          // matters here specifically, because the light client verifies
+          // against its FINALIZED header, which lags the chain head — a pruned
+          // provider makes state reads fail with "distance to target block
+          // exceeds maximum proof window" long after start() reported success.
+          "https://eth.drpc.org" },
+        { "sepolia", 11155111,
+          "https://lodestar-sepolia.chainsafe.io",
+          // dRPC's sepolia endpoint is behind a paid plan, so this one stays on
+          // publicnode — the pair a full light-client sync and verified calls
+          // have actually run against.
+          "https://ethereum-sepolia-rpc.publicnode.com" },
+        { "hoodi", 560048,
+          "https://lodestar-hoodi.chainsafe.io",
+          "https://hoodi.drpc.org" },
+    };
+    return v;
+}
+
+const NetworkProfile* networkProfile(const std::string& name) {
+    for (const auto& p : networkProfiles())
+        if (p.name == name) return &p;
+    return nullptr;
+}
+
 namespace {
 
+// Derived from networkProfiles() so the whitelist cannot drift from the table.
 // Upstream's `getMetadataForNetwork` only has mainnet, hoodi and sepolia
 // compiled in; anything else falls through to `fatal` + `quit 1`.
 const std::set<std::string>& kNetworks() {
-    static const std::set<std::string> v{ "mainnet", "sepolia", "hoodi" };
+    static const std::set<std::string> v = [] {
+        std::set<std::string> out;
+        for (const auto& p : networkProfiles()) out.insert(p.name);
+        return out;
+    }();
     return v;
 }
 
@@ -316,8 +356,6 @@ json ProxyConfig::redacted() const {
 }
 
 int64_t ProxyConfig::expectedChainId() const {
-    if (network == "mainnet") return 1;
-    if (network == "sepolia") return 11155111;
-    if (network == "hoodi")   return 560048;
-    return 0;
+    const NetworkProfile* p = networkProfile(network);
+    return p ? p->chainId : 0;
 }

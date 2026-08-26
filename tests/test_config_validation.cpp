@@ -5,6 +5,9 @@
 // down the whole HOST process, because `startVerifProxy` reaches a Nim `quit()`
 // for an unrecognised network or log level.
 
+#include <set>
+#include <string>
+
 #include <logos_test.h>
 #include <nlohmann/json.hpp>
 
@@ -184,4 +187,83 @@ LOGOS_TEST(config_redacts_provider_credentials) {
     LOGOS_ASSERT_FALSE(dumped.find("apikey=SECRET") != std::string::npos);
     // The host must survive, or the redaction is useless for diagnosis.
     LOGOS_ASSERT_CONTAINS(dumped, "eth-mainnet.g.alchemy.com");
+}
+
+// ── the network profile table ───────────────────────────────────────────────
+//
+// One table now backs the whitelist, the chain ids and the UI's prefill
+// defaults. These pin the invariants that keep those three in step, because a
+// drift between them is not a cosmetic bug: an accepted network with no chain
+// id silently disables the post-start chain check, and an unaccepted one
+// reaches a Nim quit() that kills the host.
+
+LOGOS_TEST(profiles_cover_exactly_the_networks_upstream_compiles_in) {
+    const auto& profiles = networkProfiles();
+    LOGOS_ASSERT_EQ(static_cast<int>(profiles.size()), 3);
+
+    std::set<std::string> names;
+    for (const auto& p : profiles) names.insert(p.name);
+    LOGOS_ASSERT_TRUE(names.count("mainnet") == 1);
+    LOGOS_ASSERT_TRUE(names.count("sepolia") == 1);
+    LOGOS_ASSERT_TRUE(names.count("hoodi") == 1);
+}
+
+LOGOS_TEST(every_profile_is_accepted_by_configure) {
+    // The whitelist derives from the table, so a network offered to a UI can
+    // never be one that configure() rejects — or worse, one it accepts and
+    // upstream quit()s on.
+    for (const auto& p : networkProfiles()) {
+        json c = baseConfig();
+        c["network"] = p.name;
+        ProxyConfig out;
+        std::string err;
+        LOGOS_ASSERT_TRUE(ProxyConfig::fromJson(c, out, err));
+        LOGOS_ASSERT_EQ(err, std::string(""));
+        LOGOS_ASSERT_EQ(out.expectedChainId(), p.chainId);
+    }
+}
+
+LOGOS_TEST(every_profile_has_a_real_chain_id) {
+    // 0 is the "unknown network" sentinel expectedChainId() returns, so a 0
+    // here would mean the post-start chain check compares against nothing.
+    for (const auto& p : networkProfiles())
+        LOGOS_ASSERT_GT(p.chainId, 0);
+}
+
+LOGOS_TEST(profile_lookup_rejects_an_unknown_network) {
+    LOGOS_ASSERT_TRUE(networkProfile("mainnet") != nullptr);
+    LOGOS_ASSERT_TRUE(networkProfile("holesky") == nullptr);   // a plausible typo
+    LOGOS_ASSERT_TRUE(networkProfile("") == nullptr);
+}
+
+LOGOS_TEST(profile_default_urls_are_empty_or_well_formed) {
+    // A default is optional — empty means "no public endpoint qualifies" — but
+    // a NON-empty one is prefilled straight into a form and submitted, so it
+    // must survive the same validation any typed URL does.
+    for (const auto& p : networkProfiles()) {
+        for (const std::string& url : { p.beaconApiUrl, p.executionApiUrl }) {
+            if (url.empty()) continue;
+            LOGOS_ASSERT_TRUE(url.rfind("http://", 0) == 0 || url.rfind("https://", 0) == 0
+                              || url.rfind("ws://", 0) == 0 || url.rfind("wss://", 0) == 0);
+        }
+        // A default pair must be all-or-nothing: prefilling one field and
+        // leaving the other blank produces a form that looks ready and is not.
+        LOGOS_ASSERT_EQ(p.beaconApiUrl.empty(), p.executionApiUrl.empty());
+    }
+}
+
+LOGOS_TEST(a_profiles_defaults_are_accepted_as_a_real_config) {
+    // The end-to-end claim a UI relies on: prefill from a profile, submit, and
+    // configure() takes it.
+    for (const auto& p : networkProfiles()) {
+        if (p.beaconApiUrl.empty()) continue;
+        json c = baseConfig();
+        c["network"] = p.name;
+        c["beaconApiUrls"]    = json::array({ p.beaconApiUrl });
+        c["executionApiUrls"] = json::array({ p.executionApiUrl });
+        ProxyConfig out;
+        std::string err;
+        LOGOS_ASSERT_TRUE(ProxyConfig::fromJson(c, out, err));
+        LOGOS_ASSERT_EQ(err, std::string(""));
+    }
 }
