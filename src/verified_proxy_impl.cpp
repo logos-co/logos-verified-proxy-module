@@ -127,6 +127,26 @@ LogosMap VerifiedProxyImpl::getConfig() {
     return m_cfg->redacted();
 }
 
+LogosMap VerifiedProxyImpl::getConfigUnredacted() {
+    if (!m_configured || !m_cfg) return json::object();
+    return m_cfg->raw();
+}
+
+LogosMap VerifiedProxyImpl::defaultConfig(const std::string& network) {
+    if (!networkProfile(network)) return json::object();
+
+    // Round-trip a default-constructed config through fromJson so the result is
+    // exactly what configure() would produce for this network — including the
+    // endpoint defaults it fills in — rather than a second, drifting copy of
+    // the same defaults written out by hand.
+    ProxyConfig cfg;
+    std::string err;
+    json seed = json::object();
+    seed["network"] = network;
+    if (!ProxyConfig::fromJson(seed, cfg, err)) return json::object();
+    return cfg.raw();
+}
+
 // ── Lifecycle ───────────────────────────────────────────────────────────────
 
 StdLogosResult VerifiedProxyImpl::start() {

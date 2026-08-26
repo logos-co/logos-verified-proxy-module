@@ -237,6 +237,25 @@ bool ProxyConfig::fromJson(const json& in, ProxyConfig& out, std::string& err) {
     // --- backends ------------------------------------------------------------
     if (!readStringList(in, "executionApiUrls",   out.executionApiUrls,   err)) return false;
     if (!readStringList(in, "beaconApiUrls",      out.beaconApiUrls,      err)) return false;
+
+    // Fill either endpoint list from the network's profile when the caller did
+    // not supply one, so a minimal config is a working config:
+    //
+    //   {"network": "mainnet", "trustedBlockRoot": "0x…"}
+    //
+    // is enough from a CLI. Only the trusted root has no sensible default — it
+    // is the anchor of the whole trust model and must be chosen deliberately.
+    // A caller that DID supply URLs always wins; this never overrides.
+    // Only when the key is ABSENT. An explicit empty array is the caller
+    // stating "no endpoints", which is a config error and stays one — silently
+    // substituting a default for a value someone deliberately wrote would hide
+    // their mistake rather than fix it.
+    if (const NetworkProfile* p = networkProfile(out.network)) {
+        if (!in.contains("beaconApiUrls") && !p->beaconApiUrl.empty())
+            out.beaconApiUrls = { p->beaconApiUrl };
+        if (!in.contains("executionApiUrls") && !p->executionApiUrl.empty())
+            out.executionApiUrls = { p->executionApiUrl };
+    }
     if (!readStringList(in, "opExecutionApiUrls", out.opExecutionApiUrls, err)) return false;
     if (!readStringList(in, "privateTxUrls",      out.privateTxUrls,      err)) return false;
     if (!readStringList(in, "archiveUrls",        out.archiveUrls,        err)) return false;
@@ -319,16 +338,22 @@ std::string ProxyConfig::toUpstreamJson() const {
     return j.dump();
 }
 
-json ProxyConfig::redacted() const {
+json ProxyConfig::redacted() const { return asJson(/*redactUrls=*/true); }
+json ProxyConfig::raw() const       { return asJson(/*redactUrls=*/false); }
+
+json ProxyConfig::asJson(bool redactUrls) const {
+    const auto urls = [redactUrls](const std::vector<std::string>& v) {
+        return redactUrls ? urlsRedacted(v) : json(v);
+    };
     json j;
     j["network"]          = network;
     j["trustedBlockRoot"] = trustedBlockRoot;
     j["chainId"]          = expectedChainId();
-    j["executionApiUrls"]   = urlsRedacted(executionApiUrls);
-    j["beaconApiUrls"]      = urlsRedacted(beaconApiUrls);
-    j["opExecutionApiUrls"] = urlsRedacted(opExecutionApiUrls);
-    j["privateTxUrls"]      = urlsRedacted(privateTxUrls);
-    j["archiveUrls"]        = urlsRedacted(archiveUrls);
+    j["executionApiUrls"]   = urls(executionApiUrls);
+    j["beaconApiUrls"]      = urls(beaconApiUrls);
+    j["opExecutionApiUrls"] = urls(opExecutionApiUrls);
+    j["privateTxUrls"]      = urls(privateTxUrls);
+    j["archiveUrls"]        = urls(archiveUrls);
     j["logLevel"]  = logLevel;
     j["logFormat"] = logFormat;
     j["tuning"] = {

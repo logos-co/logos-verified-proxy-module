@@ -67,6 +67,33 @@ public:
     /// credentials redacted. Returns an empty object if configure() has not run.
     LogosMap getConfig();
 
+    /// The same configuration WITHOUT redaction, for restoring a form.
+    ///
+    /// configure() persists what it accepts, and onContextReady() reloads it,
+    /// so the module already remembers the last working setup across restarts.
+    /// A UI repopulating its fields needs the real URLs, which getConfig()
+    /// deliberately masks because provider endpoints can carry API keys.
+    ///
+    /// Returns an empty object if configure() has not run. Treat the result as
+    /// a credential: do not log it, and prefer getConfig() anywhere the values
+    /// are only being displayed.
+    LogosMap getConfigUnredacted();
+
+    /// A complete, ready-to-submit configuration for `network`, with this
+    /// module's defaults filled in — the endpoint pair from the network table
+    /// plus every tuning and timeout default.
+    ///
+    /// Intended for bootstrapping from a CLI:
+    ///
+    ///     logosctl call verified_proxy_module defaultConfig mainnet
+    ///
+    /// gives a template to edit. `trustedBlockRoot` is deliberately left EMPTY
+    /// — it anchors the entire trust model and cannot be defaulted; fetch one
+    /// with fetchFinalizedRoot() or supply one you already trust.
+    ///
+    /// Returns an empty object for an unsupported network.
+    LogosMap defaultConfig(const std::string& network);
+
     // ── Lifecycle ────────────────────────────────────────────────────────
 
     /// Start the proxy and wait for the light client to initialise.

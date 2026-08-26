@@ -119,9 +119,19 @@ struct ProxyConfig {
     /// COMMA-SEPARATED STRINGS upstream, not arrays.
     std::string toUpstreamJson() const;
 
+    /// The same view WITHOUT redaction, so a UI can repopulate its form from
+    /// the config the module persisted. Carries provider credentials verbatim:
+    /// never log it, and never hand it to a caller that only needs to display
+    /// the configuration.
+    nlohmann::json raw() const;
+
     /// Round-trippable view for getConfig(), with URL credentials redacted —
     /// provider URLs routinely carry an API key in the path or query.
     nlohmann::json redacted() const;
+
+private:
+    nlohmann::json asJson(bool redactUrls) const;
+public:
 
     /// The chain id this network must report, or 0 if unknown. The library
     /// hardcodes mainnet->1, sepolia->11155111, hoodi->560048 and does NOT

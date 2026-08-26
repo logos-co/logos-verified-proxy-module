@@ -267,3 +267,95 @@ LOGOS_TEST(a_profiles_defaults_are_accepted_as_a_real_config) {
         LOGOS_ASSERT_EQ(err, std::string(""));
     }
 }
+
+// ── defaults filled from the network profile ────────────────────────────────
+
+LOGOS_TEST(config_fills_absent_endpoints_from_the_network_profile) {
+    // The CLI contract: network + trusted root is a WORKING config.
+    for (const auto& p : networkProfiles()) {
+        if (p.beaconApiUrl.empty()) continue;
+        json minimal{
+            { "network", p.name },
+            { "trustedBlockRoot", "0x" + std::string(64, 'a') },
+        };
+        ProxyConfig out;
+        std::string err;
+        LOGOS_ASSERT_TRUE(ProxyConfig::fromJson(minimal, out, err));
+        LOGOS_ASSERT_EQ(err, std::string(""));
+        LOGOS_ASSERT_EQ(static_cast<int>(out.beaconApiUrls.size()), 1);
+        LOGOS_ASSERT_EQ(out.beaconApiUrls[0], p.beaconApiUrl);
+        LOGOS_ASSERT_EQ(out.executionApiUrls[0], p.executionApiUrl);
+    }
+}
+
+LOGOS_TEST(config_never_overrides_endpoints_the_caller_supplied) {
+    json c = baseConfig();
+    c["network"] = "mainnet";
+    c["beaconApiUrls"]    = json::array({ "https://my.beacon.example" });
+    c["executionApiUrls"] = json::array({ "https://my.exec.example" });
+    ProxyConfig out;
+    std::string err;
+    LOGOS_ASSERT_TRUE(ProxyConfig::fromJson(c, out, err));
+    LOGOS_ASSERT_EQ(out.beaconApiUrls[0], std::string("https://my.beacon.example"));
+    LOGOS_ASSERT_EQ(out.executionApiUrls[0], std::string("https://my.exec.example"));
+}
+
+LOGOS_TEST(config_still_rejects_an_explicitly_empty_endpoint_list) {
+    // Absent means "use the defaults"; an explicit [] is the caller saying
+    // "none", which is a mistake worth reporting rather than papering over.
+    json c = baseConfig();
+    c["network"] = "mainnet";
+    c["executionApiUrls"] = json::array();
+    ProxyConfig out;
+    std::string err;
+    LOGOS_ASSERT_FALSE(ProxyConfig::fromJson(c, out, err));
+    LOGOS_ASSERT_TRUE(!err.empty());
+}
+
+LOGOS_TEST(config_does_not_default_the_trusted_root) {
+    // The one field with no defensible default: it anchors the whole trust
+    // model, so a config without it must fail rather than quietly acquire one.
+    json minimal{ { "network", "mainnet" } };
+    ProxyConfig out;
+    std::string err;
+    LOGOS_ASSERT_FALSE(ProxyConfig::fromJson(minimal, out, err));
+    LOGOS_ASSERT_CONTAINS(err, "trustedBlockRoot");
+}
+
+// ── redacted vs raw ─────────────────────────────────────────────────────────
+
+LOGOS_TEST(raw_keeps_url_credentials_that_redacted_masks) {
+    // getConfig() masks provider URLs because they can carry API keys;
+    // getConfigUnredacted() must NOT, or a form cannot be repopulated.
+    json c = baseConfig();
+    c["executionApiUrls"] = json::array({ "wss://eth.example/v2/secret-key" });
+    ProxyConfig out;
+    std::string err;
+    LOGOS_ASSERT_TRUE(ProxyConfig::fromJson(c, out, err));
+
+    const std::string redacted = out.redacted().dump();
+    const std::string raw      = out.raw().dump();
+    LOGOS_ASSERT_TRUE(redacted.find("secret-key") == std::string::npos);
+    LOGOS_ASSERT_TRUE(raw.find("secret-key") != std::string::npos);
+}
+
+LOGOS_TEST(raw_config_round_trips_through_configure) {
+    // What a UI restores must be something configure() accepts again —
+    // otherwise "restore the last config" hands back a form that cannot start.
+    json c = baseConfig();
+    c["network"] = "sepolia";
+    ProxyConfig first;
+    std::string err;
+    LOGOS_ASSERT_TRUE(ProxyConfig::fromJson(c, first, err));
+
+    ProxyConfig second;
+    LOGOS_ASSERT_TRUE(ProxyConfig::fromJson(first.raw(), second, err));
+    LOGOS_ASSERT_EQ(err, std::string(""));
+    LOGOS_ASSERT_EQ(second.network, first.network);
+    LOGOS_ASSERT_EQ(second.trustedBlockRoot, first.trustedBlockRoot);
+    LOGOS_ASSERT_TRUE(second.beaconApiUrls == first.beaconApiUrls);
+    LOGOS_ASSERT_TRUE(second.executionApiUrls == first.executionApiUrls);
+    LOGOS_ASSERT_EQ(second.keepAlive, first.keepAlive);
+    LOGOS_ASSERT_EQ(second.httpEnabled, first.httpEnabled);
+    LOGOS_ASSERT_EQ(second.httpPort, first.httpPort);
+}

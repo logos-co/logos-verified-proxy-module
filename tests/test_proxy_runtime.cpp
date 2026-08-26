@@ -29,7 +29,12 @@ ProxyConfig testConfig() {
     c.trustedBlockRoot = "0x" + std::string(64, 'a');
     c.executionApiUrls = { "https://exec.example" };
     c.beaconApiUrls    = { "https://beacon.example" };
-    c.callTimeoutMs    = 1500;
+    // Generous on purpose. Tests that exercise a TIMEOUT set their own short
+    // value; every other test only needs the call to complete, and a tight
+    // budget here made them fail under a parallel nix build rather than merely
+    // run slower. Observed: runtime_confines_every_c_call_to_one_non_caller_thread
+    // failing at 1500ms on a loaded machine and passing on a quiet one.
+    c.callTimeoutMs    = 15000;
     c.startTimeoutMs   = 5000;
     c.drainTimeoutMs   = 500;
     c.pumpIntervalMs   = 20;

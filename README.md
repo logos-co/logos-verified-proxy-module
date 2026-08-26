@@ -59,7 +59,9 @@ impossible without it. (Infura notably does not.)
 | Method | Notes |
 |---|---|
 | `configure(config)` | Validate and store config. Synchronous; starts nothing. |
-| `getConfig()` | Effective config, credentials redacted. |
+| `getConfig()` | Effective config, credentials redacted. Use this to DISPLAY configuration. |
+| `getConfigUnredacted()` | The same, unredacted, so a UI can repopulate a form. Treat as a credential. |
+| `defaultConfig(network)` | A complete, ready-to-submit config for a network. `trustedBlockRoot` is left empty. |
 | `start()` | Blocks until the light client initialises, bounded by `startTimeoutMs`. |
 | `stop()` | Drains, then releases. See the note on `drainTimeoutMs` below — it is not a tight bound. |
 | `ok()` / `status()` | Health probe and full state. `status()` never blocks on the proxy thread. |
