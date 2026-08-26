@@ -478,3 +478,95 @@ LOGOS_TEST(runtime_a_healthy_heartbeat_leaves_state_running) {
     LOGOS_ASSERT_EQ(s["state"].get<std::string>(), std::string("running"));
     LOGOS_ASSERT_EQ(s["counters"]["heartbeatFailures"].get<int64_t>(), 0);
 }
+
+LOGOS_TEST(runtime_restart_reuses_the_very_same_thread) {
+    // THE regression test for a real crash: stop-then-start segfaulted the
+    // module process (signal 11), reproduced deterministically against the real
+    // archive with the network and config held identical across both runs.
+    //
+    // Cause: NimMain() binds the Nim runtime to the thread that calls it, and
+    // this build compiles NEITHER setupForeignThreadGc NOR tearDownForeignThreadGc
+    // — both sites in verifproxy.nim sit behind `when defined(setupForeignThreadGc)`
+    // and nothing defines it. A second thread therefore has no GC state at all
+    // and dies inside startVerifProxy. The old code created a fresh
+    // std::thread per start(); the thread must instead outlive every run.
+    auto t = LogosTestContext("verified_proxy_module");
+    mockReset();
+
+    ProxyRuntime rt(nullptr);
+    LOGOS_ASSERT_TRUE(rt.start(testConfig()).success);
+    const auto firstRunThread = mockThreadOf("startVerifProxy");
+    LOGOS_ASSERT_TRUE(firstRunThread != std::thread::id{});
+    LOGOS_ASSERT_TRUE(rt.stop().success);
+
+    // Second run, same object.
+    LOGOS_ASSERT_TRUE(rt.start(testConfig()).success);
+    const auto secondRunThread = mockThreadOf("startVerifProxy");
+    LOGOS_ASSERT_TRUE(secondRunThread != std::thread::id{});
+
+    // The invariant that keeps the Nim runtime alive.
+    LOGOS_ASSERT_TRUE(secondRunThread == firstRunThread);
+    LOGOS_ASSERT_TRUE(secondRunThread != std::this_thread::get_id());
+
+    // And the second run is genuinely usable, not merely alive.
+    LOGOS_ASSERT_TRUE(rt.call("eth_blockNumber", json::array()).success);
+    rt.stop();
+}
+
+LOGOS_TEST(runtime_survives_several_restarts) {
+    // The failure was on the SECOND run; make sure it is not merely pushed to
+    // the third. Also pins the lifecycle guards: start() on a running proxy and
+    // stop() on a stopped one are errors, not crashes or hangs.
+    auto t = LogosTestContext("verified_proxy_module");
+    mockReset();
+
+    ProxyRuntime rt(nullptr);
+    std::thread::id firstThread{};
+
+    for (int i = 0; i < 4; ++i) {
+        LOGOS_ASSERT_TRUE(rt.start(testConfig()).success);
+        const auto tid = mockThreadOf("startVerifProxy");
+        if (i == 0) firstThread = tid; else LOGOS_ASSERT_TRUE(tid == firstThread);
+
+        // Starting an already-running proxy is refused, not honoured.
+        LOGOS_ASSERT_FALSE(rt.start(testConfig()).success);
+
+        LOGOS_ASSERT_TRUE(rt.running());
+        LOGOS_ASSERT_TRUE(rt.stop().success);
+        LOGOS_ASSERT_FALSE(rt.running());
+
+        // Stopping a stopped proxy is refused, not a second teardown.
+        LOGOS_ASSERT_FALSE(rt.stop().success);
+    }
+}
+
+LOGOS_TEST(runtime_restart_does_not_inherit_the_previous_runs_head) {
+    // status().head describes the CURRENT run. Carrying the old value across a
+    // restart would report a head from a chain the proxy is no longer on — the
+    // exact situation that prompted this bug report, where the operator stopped,
+    // switched network, and started again.
+    auto t = LogosTestContext("verified_proxy_module");
+    mockReset();
+    t.mockCFunction("proxyCall").returns("11572348");
+
+    ProxyConfig cfg = testConfig();
+    cfg.keepAlive = "interval";
+    cfg.keepAliveIntervalMs = 20;
+
+    ProxyRuntime rt(nullptr);
+    LOGOS_ASSERT_TRUE(rt.start(cfg).success);
+    LOGOS_ASSERT_TRUE(spinUntil([&] {
+        return !rt.statusSnapshot()["head"]["blockNumber"].get<std::string>().empty();
+    }));
+    rt.stop();
+
+    // Restart with the heartbeat off so nothing can repopulate it.
+    ProxyConfig quiet = testConfig();
+    quiet.keepAlive = "off";
+    LOGOS_ASSERT_TRUE(rt.start(quiet).success);
+    const json s = rt.statusSnapshot();
+    rt.stop();
+
+    LOGOS_ASSERT_EQ(s["head"]["blockNumber"].get<std::string>(), std::string(""));
+    LOGOS_ASSERT_EQ(s["head"]["updatedAt"].get<int64_t>(), 0);
+}

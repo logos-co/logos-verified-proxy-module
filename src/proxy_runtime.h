@@ -103,6 +103,7 @@ private:
     static const char* stateName(State s);
 
     void threadMain();
+    void runOnce();
     void teardown();
     void drainCommands();
     void issueKeepAlive();
@@ -146,9 +147,28 @@ private:
     std::atomic<bool>     m_stopRequested{false};
     std::atomic<State>    m_state{State::Idle};
 
-    // start() handshake
+    // ── the proxy thread's lifetime ──────────────────────────────────────
+    //
+    // ONE thread for the life of this object, not one per start().
+    //
+    // The Nim runtime is bound to whichever thread ran NimMain(), and this
+    // build compiles NEITHER setupForeignThreadGc nor tearDownForeignThreadGc:
+    // both sites in verifproxy.nim sit behind `when defined(setupForeignThreadGc)`
+    // and nothing defines it. So a second thread has no GC state at all and
+    // segfaults inside startVerifProxy — reproduced deterministically against
+    // the real archive, same network and config both times: new thread -> 139
+    // (SIGSEGV), same thread -> clean, with a fresh Context returned.
+    //
+    // start()/stop() are therefore COMMANDS posted to this thread, and only the
+    // destructor ends it.
+    std::atomic<bool> m_shutdown{false};   // destructor asked the thread to exit
+    std::atomic<bool> m_runActive{false};  // between a good startVerifProxy and teardown
+
+    // start()/stop() handshake
     std::mutex m_startMu;
     std::condition_variable m_startCv;
+    bool m_runRequested = false;   // a start() is waiting to be picked up
+    bool m_runFinished = true;     // teardown for the current run has completed
     bool m_startDone = false;
     bool m_startOk = false;
     std::string m_startError;

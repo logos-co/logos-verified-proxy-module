@@ -97,7 +97,17 @@ const char* ProxyRuntime::stateName(State s) {
 
 ProxyRuntime::ProxyRuntime(EmitFn emit) : m_emit(std::move(emit)) {}
 
-ProxyRuntime::~ProxyRuntime() { stop(); }
+ProxyRuntime::~ProxyRuntime() {
+    if (m_runActive.load()) stop();
+
+    // Only the destructor ends the thread. Join UNCONDITIONALLY, never detach:
+    // LogosModule::unload() unmaps the plugin image while the host keeps
+    // running, so a detached thread would execute unmapped code.
+    m_shutdown = true;
+    m_startCv.notify_all();
+    m_cv.notify_all();
+    if (m_thread.joinable()) m_thread.join();
+}
 
 void ProxyRuntime::setState(State s, const std::string& error) {
     const State prev = m_state.exchange(s);
@@ -120,19 +130,26 @@ bool ProxyRuntime::keepAliveEnabled() const { return m_cfg.keepAlive != "off"; }
 // ---------------------------------------------------------------------------
 
 StdLogosResult ProxyRuntime::start(const ProxyConfig& cfg) {
-    if (m_thread.joinable())
+    if (m_runActive.load())
         return { false, {}, "proxy already started" };
 
     m_cfg = cfg;
     m_upstreamJson = cfg.toUpstreamJson();
     m_stopRequested = false;
+
+    // The thread outlives every individual run: see the note on m_shutdown.
+    // Created lazily so a module that never starts the proxy never spawns it.
+    if (!m_thread.joinable())
+        m_thread = std::thread([this] { threadMain(); });
+
+    setState(State::Starting);
     {
         std::lock_guard<std::mutex> lk(m_startMu);
         m_startDone = false; m_startOk = false; m_startError.clear();
+        m_runFinished = false;
+        m_runRequested = true;
     }
-    setState(State::Starting);
-
-    m_thread = std::thread([this] { threadMain(); });
+    m_startCv.notify_all();
 
     std::unique_lock<std::mutex> lk(m_startMu);
     const bool signalled = m_startCv.wait_for(
@@ -140,8 +157,7 @@ StdLogosResult ProxyRuntime::start(const ProxyConfig& cfg) {
 
     if (!signalled) {
         // startVerifProxy has an unbounded prologue and no cancel. Leave the
-        // thread running rather than tearing down underneath it; stop() will
-        // join once it returns.
+        // run going rather than tearing down underneath it; stop() waits for it.
         return { false, {}, "timed out after " + std::to_string(m_cfg.startTimeoutMs)
                             + "ms waiting for the light client to initialise" };
     }
@@ -155,14 +171,26 @@ StdLogosResult ProxyRuntime::start(const ProxyConfig& cfg) {
 StdLogosResult ProxyRuntime::stop() {
     if (!m_thread.joinable())
         return { false, {}, "proxy is not running" };
+    {
+        std::lock_guard<std::mutex> lk(m_startMu);
+        if (m_runFinished && !m_runActive.load())
+            return { false, {}, "proxy is not running" };
+    }
 
     m_stopRequested = true;
     m_cv.notify_all();
-    // Join UNCONDITIONALLY, never detach: LogosModule::unload() unmaps the
-    // plugin image while the host keeps running, so a detached thread would
-    // execute unmapped code.
-    m_thread.join();
-    setState(State::Stopped);
+
+    // Wait for the RUN to finish, not for the thread to exit — the thread is
+    // reused by the next start(). The drain is bounded (drainTimeoutMs plus at
+    // most one processVerifProxyTasks, measured up to 3253ms), so this waits
+    // generously rather than forever, and never blocks the caller for the life
+    // of the process.
+    std::unique_lock<std::mutex> lk(m_startMu);
+    const bool finished = m_startCv.wait_for(
+        lk, milliseconds(m_cfg.drainTimeoutMs + 15000), [this] { return m_runFinished; });
+    if (!finished)
+        return { false, {}, "timed out waiting for the proxy to drain" };
+
     return { true, {}, "" };
 }
 
@@ -170,10 +198,39 @@ void ProxyRuntime::threadMain() {
     m_threadId = std::this_thread::get_id();
 
     // NimMain must run before anything else (library/nim.cfg sets --noMain:on),
-    // and it must run on the thread that later registers itself for the foreign
-    // GC, because setupForeignThreadGc/tearDownForeignThreadGc are bound to
-    // startVerifProxy/stopVerifProxy.
+    // and it binds the Nim runtime to THIS thread for good: this build compiles
+    // neither setupForeignThreadGc nor tearDownForeignThreadGc, since both call
+    // sites in verifproxy.nim sit behind `when defined(setupForeignThreadGc)`
+    // and nothing defines it. Any other thread calling into the library has no
+    // GC state and dies in startVerifProxy.
     std::call_once(g_nimMainOnce, [] { ::NimMain(); });
+
+    // One thread, many runs. Everything that touches a verifproxy.h symbol
+    // happens below this line, on this thread, for the life of the module.
+    for (;;) {
+        {
+            std::unique_lock<std::mutex> lk(m_startMu);
+            m_startCv.wait(lk, [this] { return m_runRequested || m_shutdown.load(); });
+            if (m_shutdown.load()) return;
+            m_runRequested = false;
+        }
+        runOnce();
+    }
+}
+
+void ProxyRuntime::runOnce() {
+    assert(std::this_thread::get_id() == m_threadId);
+
+    // Every run gets a fresh Context; the previous one was released by
+    // teardown(). Reset the per-run counters that describe the CURRENT run so
+    // a restart does not inherit the last run's health.
+    m_heartbeatStreak.store(0, std::memory_order_relaxed);
+    m_beatsSinceHead.store(0, std::memory_order_relaxed);
+    {
+        std::lock_guard<std::mutex> lk(m_errMu);
+        m_headBlockNumber.clear();
+        m_headUpdatedAt = 0;
+    }
 
     m_ctx = ::startVerifProxy(m_upstreamJson.data(), nullptr, nullptr);
 
@@ -197,8 +254,15 @@ void ProxyRuntime::threadMain() {
         if (m_emit)
             m_emit("proxyStarted",
                    json{ { "success", false }, { "error", m_startError } }.dump());
+        // The run is over before it began; release anyone in stop().
+        {
+            std::lock_guard<std::mutex> lk(m_startMu);
+            m_runFinished = true;
+        }
+        m_startCv.notify_all();
         return;
     }
+    m_runActive = true;
 
     setState(State::Running);
     if (m_emit)
@@ -275,8 +339,18 @@ void ProxyRuntime::teardown() {
     ::stopVerifProxy(m_ctx);
     ::freeContext(m_ctx);
     m_ctx = nullptr;
+    m_runActive = false;
 
+    setState(State::Stopped);
     if (m_emit) m_emit("proxyStopped", json{ { "success", true } }.dump());
+
+    // Release stop(). Must come AFTER freeContext, so a start() that follows
+    // cannot race a half-released Context.
+    {
+        std::lock_guard<std::mutex> lk(m_startMu);
+        m_runFinished = true;
+    }
+    m_startCv.notify_all();
 }
 
 void ProxyRuntime::failAllPending(const std::string& why) {
