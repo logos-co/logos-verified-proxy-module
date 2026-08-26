@@ -128,6 +128,22 @@ public:
     /// path the typed methods use.
     std::string localEndpoint();
 
+    /// Fetch the current finalized beacon block root from `beaconUrl`.
+    ///
+    /// A convenience for operators who have no root to hand: it queries
+    /// `<beaconUrl>/eth/v1/beacon/headers/finalized` and returns
+    /// `{"root": "0x…", "slot": "…"}`. Takes the URL as an argument rather
+    /// than reading the stored config so it is usable before configure().
+    ///
+    /// This is deliberately NOT part of the trust model. A root fetched from
+    /// the same endpoint you are about to distrust anchors nothing — it is a
+    /// starting point for testing, and an operator running against real value
+    /// should take the root from a source they independently trust and paste
+    /// it in. The method lives here rather than in a UI because Basecamp
+    /// sandboxes `ui_qml` plugins away from the network entirely; a core
+    /// module is the only component allowed to make the request.
+    StdLogosResult fetchFinalizedRoot(const std::string& beaconUrl);
+
     // ── Verified JSON-RPC ────────────────────────────────────────────────
 
     /// Any method the proxy supports, dispatched through the library's own

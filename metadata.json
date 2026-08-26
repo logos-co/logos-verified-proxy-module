@@ -1,40 +1,41 @@
 {
-    "name": "verified_proxy_module",
-    "display_name": "Verified Proxy",
-    "version": "0.1.0",
-    "description": "Light-client-verified Ethereum JSON-RPC, wrapping nimbus libverifproxy",
-    "author": "Logos Core Team",
-    "type": "core",
-    "interface": "universal",
-    "concurrency": "multi",
-    "category": "wallet",
-    "main": "verified_proxy_module_plugin",
-    "codegen": {
-        "impl_header": "verified_proxy_impl.h",
-        "impl_class": "VerifiedProxyImpl"
+  "name": "verified_proxy_module",
+  "display_name": "Verified Proxy",
+  "version": "0.1.0",
+  "description": "Light-client-verified Ethereum JSON-RPC, wrapping nimbus libverifproxy",
+  "author": "Logos Core Team",
+  "type": "core",
+  "interface": "universal",
+  "concurrency": "multi",
+  "category": "wallet",
+  "main": "verified_proxy_module_plugin",
+  "codegen": {
+    "impl_header": "verified_proxy_impl.h",
+    "impl_class": "VerifiedProxyImpl"
+  },
+  "dependencies": [],
+  "include": [],
+  "capabilities": [],
+  "nix": {
+    "packages": {
+      "build": [
+        "pkg-config"
+      ],
+      "runtime": [
+        "nlohmann_json",
+        "libmicrohttpd",
+        "curl"
+      ]
     },
-    "dependencies": [],
-    "include": [],
-    "capabilities": [],
-    "nix": {
-        "packages": {
-            "build": [
-                "pkg-config"
-            ],
-            "runtime": [
-                "nlohmann_json",
-                "libmicrohttpd"
-            ]
-        },
-        "external_libraries": [
-            {
-                "name": "verifproxy"
-            }
-        ],
-        "cmake": {
-            "extra_include_dirs": [
-                "lib"
-            ]
-        }
+    "external_libraries": [
+      {
+        "name": "verifproxy"
+      }
+    ],
+    "cmake": {
+      "extra_include_dirs": [
+        "lib"
+      ]
     }
+  }
 }

@@ -63,6 +63,7 @@ impossible without it. (Infura notably does not.)
 | `start()` | Blocks until the light client initialises, bounded by `startTimeoutMs`. |
 | `stop()` | Drains, then releases. See the note on `drainTimeoutMs` below — it is not a tight bound. |
 | `ok()` / `status()` | Health probe and full state. `status()` never blocks on the proxy thread. |
+| `fetchFinalizedRoot(beaconUrl)` | Convenience: asks a beacon node for its current finalized root. **Not** a trust anchor — see below. |
 | `rpc(method, params)` | Any method the proxy supports. `params` is a JSON-RPC array. |
 | `ethBlockNumber()`, `ethGetBalance(...)`, `ethCall(...)`, … | Typed wrappers over the same path. |
 
@@ -230,7 +231,17 @@ single `eth_blockNumber` in that run took **12.6 s**, against a 30 s default
   value reaches a `quit()` before that point.
 * Sync observability is limited: there is no exported getter for the
   finalized/optimistic slot. `status().state == "degraded"` means "up, but
-  heartbeats are failing", inferred from their error strings.
+  heartbeats are failing", inferred from their error strings — three
+  consecutive failures degrade, one success clears it. `status().head` is
+  refreshed by a separate `eth_blockNumber` probe every fifth heartbeat,
+  because `eth_syncing` answers a hardcoded `false` and cannot report it.
+* `fetchFinalizedRoot()` exists because Basecamp sandboxes `ui_qml` plugins
+  away from the network entirely — an `XMLHttpRequest` from a panel is refused
+  with *"sandboxed ui_qml modules may not use the network"* — so a UI that
+  wants to offer "fetch me a root" has to route it through a core module.
+  It is a convenience for getting started, **not** part of the trust model: a
+  root taken from the same endpoint you are about to verify against anchors
+  nothing. For anything holding real value, obtain the root independently.
 
 ## Development
 

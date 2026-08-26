@@ -6,6 +6,7 @@
 #include <sstream>
 #include <system_error>
 
+#include "beacon_client.h"
 #include "proxy_config.h"
 #include "proxy_runtime.h"
 #include "rpc_http_server.h"
@@ -187,6 +188,30 @@ LogosMap VerifiedProxyImpl::status() {
 
 std::string VerifiedProxyImpl::moduleVersion()  { return VERIFIED_PROXY_MODULE_VERSION; }
 std::string VerifiedProxyImpl::libraryVersion() { return VERIFIED_PROXY_NIMBUS_REV; }
+
+StdLogosResult VerifiedProxyImpl::fetchFinalizedRoot(const std::string& beaconUrl) {
+    const std::string base = beacon_client::trim(beaconUrl);
+    if (base.empty()) return { false, {}, "beacon URL is required" };
+    if (!beacon_client::isHttpUrl(base))
+        return { false, {}, "beacon URL must be http(s): " + base };
+
+    const std::string url = beacon_client::finalizedHeaderUrl(base);
+    const beacon_client::HttpResponse res = beacon_client::httpGet(url);
+    if (!res.error.empty()) return { false, {}, "beacon request failed: " + res.error };
+    if (res.status != 200)
+        return { false, {}, "beacon returned HTTP " + std::to_string(res.status) };
+
+    std::string slot;
+    const std::string root = beacon_client::parseFinalizedRoot(res.body, slot);
+    if (root.empty())
+        return { false, {}, "beacon response did not contain data.root" };
+
+    LogosMap out;
+    out["root"] = root;
+    out["slot"] = slot;
+    out["source"] = url;
+    return { true, out };
+}
 
 // ── Verified JSON-RPC ───────────────────────────────────────────────────────
 //

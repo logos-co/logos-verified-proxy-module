@@ -49,6 +49,20 @@ int lastIndexOf(const std::vector<std::string>& v, const std::string& s) {
     return -1;
 }
 
+/// Spin until `pred` holds or `budgetMs` elapses. Sleeping a fixed interval and
+/// hoping N heartbeats fit inside it makes a test that is green on an idle
+/// machine and red under a parallel nix build; this makes a loaded builder
+/// slower rather than flaky.
+template <typename Pred>
+bool spinUntil(Pred pred, int budgetMs = 8000) {
+    const auto deadline = steady_clock::now() + milliseconds(budgetMs);
+    while (steady_clock::now() < deadline) {
+        if (pred()) return true;
+        std::this_thread::sleep_for(milliseconds(5));
+    }
+    return pred();
+}
+
 } // namespace
 
 LOGOS_TEST(runtime_start_and_stop_round_trip) {
@@ -382,4 +396,85 @@ LOGOS_TEST(runtime_heartbeat_issues_eth_syncing_only_when_enabled) {
         rt.stop();
         LOGOS_ASSERT_EQ(t.cFunctionCallCount("proxyCall:eth_syncing"), 0);
     }
+}
+
+LOGOS_TEST(runtime_head_probe_records_the_block_number) {
+    // The heartbeat cannot report the head — upstream's eth_syncing answers a
+    // hardcoded `false` — so a separate eth_blockNumber probe populates it.
+    // Before this was wired, status().head.blockNumber was a field that was
+    // read and never assigned, so it stayed "" for the life of the process.
+    auto t = LogosTestContext("verified_proxy_module");
+    mockReset();
+    t.mockCFunction("proxyCall").returns("11572348");   // a bare JSON number
+
+    ProxyConfig cfg = testConfig();
+    cfg.keepAlive = "interval";
+    cfg.keepAliveIntervalMs = 20;
+
+    ProxyRuntime rt(nullptr);
+    LOGOS_ASSERT_TRUE(rt.start(cfg).success);
+    const bool got = spinUntil([&] {
+        return !rt.statusSnapshot()["head"]["blockNumber"].get<std::string>().empty();
+    });
+    const json s = rt.statusSnapshot();
+    rt.stop();
+    LOGOS_ASSERT_TRUE(got);
+
+    LOGOS_ASSERT_GT(t.cFunctionCallCount("proxyCall:eth_blockNumber"), 0);
+    // Normalised to the "0x…" form status() documents, not the bare number
+    // upstream returns. 11572348 == 0xb0947c.
+    LOGOS_ASSERT_EQ(s["head"]["blockNumber"].get<std::string>(), std::string("0xb0947c"));
+    LOGOS_ASSERT_GT(s["head"]["updatedAt"].get<int64_t>(), 0);
+}
+
+LOGOS_TEST(runtime_consecutive_heartbeat_failures_degrade_the_proxy) {
+    // The error string of a failing heartbeat is the only machine-readable
+    // sync-health signal the C ABI exposes. Three in a row is the threshold —
+    // more than a blip, less than an outage.
+    auto t = LogosTestContext("verified_proxy_module");
+    mockReset();
+    t.mockCFunction("proxyCall_status").returns(RET_ERROR);
+
+    ProxyConfig cfg = testConfig();
+    cfg.keepAlive = "interval";
+    cfg.keepAliveIntervalMs = 20;
+
+    ProxyRuntime rt(nullptr);
+    LOGOS_ASSERT_TRUE(rt.start(cfg).success);
+    const bool degraded = spinUntil([&] {
+        return rt.statusSnapshot()["state"].get<std::string>() == "degraded";
+    });
+    const json s = rt.statusSnapshot();
+
+    LOGOS_ASSERT_TRUE(degraded);
+    LOGOS_ASSERT_EQ(s["state"].get<std::string>(), std::string("degraded"));
+    LOGOS_ASSERT_GE(s["counters"]["heartbeatFailures"].get<int64_t>(), 3);
+    // Degraded is not running — ok() must report unhealthy...
+    LOGOS_ASSERT_FALSE(rt.running());
+    // ...but the proxy is still a live, stoppable process.
+    LOGOS_ASSERT_TRUE(rt.live());
+    rt.stop();
+}
+
+LOGOS_TEST(runtime_a_healthy_heartbeat_leaves_state_running) {
+    // The mirror of the test above: the streak must not latch. A proxy whose
+    // heartbeats succeed stays Running no matter how many beats elapse.
+    auto t = LogosTestContext("verified_proxy_module");
+    mockReset();
+
+    ProxyConfig cfg = testConfig();
+    cfg.keepAlive = "interval";
+    cfg.keepAliveIntervalMs = 20;
+
+    ProxyRuntime rt(nullptr);
+    LOGOS_ASSERT_TRUE(rt.start(cfg).success);
+    // Wait for real beats rather than a fixed nap, so "still running" is a
+    // statement about many successful heartbeats and not about a short sleep.
+    const bool beat = spinUntil([&] { return t.cFunctionCallCount("proxyCall:eth_syncing") >= 5; });
+    const json s = rt.statusSnapshot();
+    rt.stop();
+
+    LOGOS_ASSERT_TRUE(beat);
+    LOGOS_ASSERT_EQ(s["state"].get<std::string>(), std::string("running"));
+    LOGOS_ASSERT_EQ(s["counters"]["heartbeatFailures"].get<int64_t>(), 0);
 }

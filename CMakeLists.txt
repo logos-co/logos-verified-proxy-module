@@ -24,6 +24,8 @@ logos_module(
         src/proxy_runtime.cpp
         src/rpc_http_server.h
         src/rpc_http_server.cpp
+        src/beacon_client.h
+        src/beacon_client.cpp
     EXTERNAL_LIBS
         verifproxy
     INCLUDE_DIRS
@@ -37,6 +39,12 @@ logos_module(
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(MHD REQUIRED IMPORTED_TARGET libmicrohttpd)
 target_link_libraries(verified_proxy_module_module_plugin PRIVATE PkgConfig::MHD)
+
+# Outbound HTTP for fetchFinalizedRoot(). Only ever used for that one request:
+# all verified traffic goes through the library's own chronos-based clients, so
+# curl is not on any hot path.
+pkg_check_modules(CURL REQUIRED IMPORTED_TARGET libcurl)
+target_link_libraries(verified_proxy_module_module_plugin PRIVATE PkgConfig::CURL)
 
 # Inject the module version from metadata.json so moduleVersion() reports it
 # without parsing JSON at runtime.

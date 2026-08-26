@@ -4,6 +4,8 @@
 #include <chrono>
 #include <cstdio>
 #include <ctime>
+#include <ios>
+#include <sstream>
 #include <utility>
 
 extern "C" {
@@ -211,6 +213,15 @@ void ProxyRuntime::threadMain() {
 
         if (m_inFlight.load() == 0 && keepAliveEnabled()
             && steady_clock::now() >= nextKeepAlive) {
+            // Every Nth beat, ask for the head as well. The heartbeat itself
+            // cannot report it — eth_syncing answers a hardcoded `false` — and
+            // probing on every beat would multiply execution-backend traffic
+            // for a number that only has to be roughly current.
+            static constexpr int64_t kHeadEveryBeats = 5;
+            if (m_beatsSinceHead.fetch_add(1, std::memory_order_relaxed) + 1 >= kHeadEveryBeats) {
+                m_beatsSinceHead.store(0, std::memory_order_relaxed);
+                issueHeadProbe();
+            }
             issueKeepAlive();
             nextKeepAlive = steady_clock::now() + milliseconds(m_cfg.keepAliveIntervalMs);
         }
@@ -366,6 +377,11 @@ void ProxyRuntime::callbackTrampoline(Context*, int status, char* result, void* 
             }
             slot->cv.notify_all();
         }
+        switch (slot->kind) {
+            case CallSlot::Kind::Heartbeat: box->rt->noteHeartbeat(*slot); break;
+            case CallSlot::Kind::HeadProbe: box->rt->noteHeadProbe(*slot); break;
+            case CallSlot::Kind::User:      break;
+        }
         box->rt->noteFinished(slot->id, status == RET_SUCCESS);
     } catch (...) {
         // Never propagate into Nim.
@@ -425,6 +441,7 @@ void ProxyRuntime::issueKeepAlive() {
     slot->id = m_nextId.fetch_add(1, std::memory_order_relaxed);
     slot->method = "eth_syncing";
     slot->params = "[]";
+    slot->kind = CallSlot::Kind::Heartbeat;
 
     auto* box = new CallBox{ slot, this };
     m_inFlight.fetch_add(1, std::memory_order_acq_rel);
@@ -435,6 +452,73 @@ void ProxyRuntime::issueKeepAlive() {
     // pollHeartbeat(). Recording the slot lets shutdown release it.
     std::lock_guard<std::mutex> lk(m_mu);
     m_pending.push_back(slot);
+}
+
+// The heartbeat's own return value is a hardcoded `false` and tells us nothing
+// about the head, so a separate, less frequent probe asks for the block number
+// outright. Same fire-and-forget shape; observed in noteHeadProbe().
+void ProxyRuntime::issueHeadProbe() {
+    assert(std::this_thread::get_id() == m_threadId);
+
+    auto slot = std::make_shared<CallSlot>();
+    slot->id = m_nextId.fetch_add(1, std::memory_order_relaxed);
+    slot->method = "eth_blockNumber";
+    slot->params = "[]";
+    slot->kind = CallSlot::Kind::HeadProbe;
+
+    auto* box = new CallBox{ slot, this };
+    m_inFlight.fetch_add(1, std::memory_order_acq_rel);
+    ::proxyCall(m_ctx, slot->method.data(), slot->params.data(),
+                &ProxyRuntime::callbackTrampoline, box);
+
+    std::lock_guard<std::mutex> lk(m_mu);
+    m_pending.push_back(slot);
+}
+
+// Consecutive heartbeat failures are the only sync-health signal the C ABI
+// offers: the error STRING is machine-readable ("UnavailableDataError: trusted
+// block root not set", "VerificationError: unviable fork"), the return value is
+// not. Three in a row is deliberately more than one blip and less than a long
+// outage.
+void ProxyRuntime::noteHeartbeat(const CallSlot& slot) {
+    static constexpr int64_t kDegradeAfter = 3;
+
+    if (slot.status == RET_SUCCESS) {
+        m_heartbeatStreak.store(0, std::memory_order_relaxed);
+        // Only climb back out of Degraded — never overwrite Draining/Stopped,
+        // which a concurrent stop() may have just set.
+        if (m_state.load() == State::Degraded) setState(State::Running);
+        return;
+    }
+
+    m_heartbeatFailures.fetch_add(1, std::memory_order_relaxed);
+    const int64_t streak = m_heartbeatStreak.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (streak >= kDegradeAfter && m_state.load() == State::Running)
+        setState(State::Degraded, errorMessage(slot.status, slot.result));
+}
+
+void ProxyRuntime::noteHeadProbe(const CallSlot& slot) {
+    if (slot.status != RET_SUCCESS) return;
+
+    bool wasJson = false;
+    const json v = decodePayload(slot.result, wasJson);
+
+    // Upstream answers eth_blockNumber with a bare JSON NUMBER, not the hex
+    // string a JSON-RPC client would expect. Normalise to the documented
+    // "0x…" shape here so status() has one form.
+    std::string hex;
+    if (v.is_number_unsigned()) {
+        std::ostringstream o;
+        o << "0x" << std::hex << v.get<uint64_t>();
+        hex = o.str();
+    } else if (v.is_string()) {
+        hex = v.get<std::string>();
+    }
+    if (hex.empty()) return;
+
+    std::lock_guard<std::mutex> lk(m_errMu);
+    m_headBlockNumber = hex;
+    m_headUpdatedAt = nowSeconds();
 }
 
 // ---------------------------------------------------------------------------

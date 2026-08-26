@@ -5,6 +5,7 @@ include(LogosTest)
 
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(MHD REQUIRED IMPORTED_TARGET libmicrohttpd)
+pkg_check_modules(CURL REQUIRED IMPORTED_TARGET libcurl)
 
 # Mirror the module build: inject the version from metadata.json.
 file(READ "${CMAKE_CURRENT_SOURCE_DIR}/../metadata.json" _vp_metadata_json)
@@ -22,11 +23,13 @@ logos_test(
         ../src/proxy_runtime.cpp
         ../src/verified_proxy_impl.cpp
         ../src/rpc_http_server.cpp
+        ../src/beacon_client.cpp
     TEST_SOURCES
         main.cpp
         test_config_validation.cpp
         test_proxy_runtime.cpp
         test_rpc_http_server.cpp
+        test_beacon_client.cpp
         verified_proxy_events_test.cpp
     MOCK_C_SOURCES
         mocks/mock_libverifproxy.cpp
@@ -34,6 +37,6 @@ logos_test(
         stubs
         .
 )
-target_link_libraries(verified_proxy_module_tests PRIVATE PkgConfig::MHD)
+target_link_libraries(verified_proxy_module_tests PRIVATE PkgConfig::MHD PkgConfig::CURL)
 target_compile_definitions(verified_proxy_module_tests PRIVATE
     VERIFIED_PROXY_MODULE_VERSION="${VERIFIED_PROXY_MODULE_VERSION}")
