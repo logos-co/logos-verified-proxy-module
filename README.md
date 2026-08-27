@@ -265,6 +265,46 @@ which is why it is a separate workflow from CI.
 nix run github:logos-co/logos-doctest -- run doctests/verified-proxy-runtime.test.yaml --verbose
 ```
 
+## Windows: blocked on the Nim version, not on the cross toolchain
+
+`nix build .#packages.x86_64-windows.libverifproxy` gets a long way and then
+fails in the same place every time:
+
+```
+vendor/nimbus-eth2/beacon_chain/spec/state_transition_block.nim(1018, 32)
+Error: invalid type: 'typeof(SomeBeaconBlockBody)' in this context
+[using system Nim: …/x86_64-w64-mingw32-nim-wrapped-2.2.4]
+```
+
+Everything that was expected to be hard already works: the mingw cross stdenv,
+the `ar` shim that `--app:staticlib` needs, the vendored nat-libs (which branch
+on `$(OS)` and silently take the POSIX path under cross), and Nim itself
+compiling most of the tree.
+
+The blocker is a **compiler version**. `USE_SYSTEM_NIM=1` substitutes the
+nixpkgs Nim for the one nimbus-build-system pins, and the `nixpkgs-windows` pin
+inside `logos-nix` carries **2.2.4** for every spelling — `nim`, `nim-2_2` and
+`nim-unwrapped-2_2` alike — while nimbus-eth2's beacon-chain sources need
+**2.2.10**, which is what the native build gets and compiles cleanly with.
+
+Three things that do NOT fix it, checked so the next person does not repeat them:
+
+- Passing a Nim from another nixpkgs. The build-side compiler in a cross set is
+  a *wrapper* (`x86_64-w64-mingw32-nim-wrapper`) that carries the mingw
+  toolchain configuration; a plain `nixpkgs#nim` is a native compiler that knows
+  nothing about the target.
+- Dropping `USE_SYSTEM_NIM=1` so nimbus-build-system builds its own pinned
+  2.2.10. It fetches Nim over the network, which the Nix sandbox forbids —
+  which is exactly why upstream's own nix build sets the flag.
+- Overriding `nim-unwrapped-2_2` from this flake. `wrapNim` is not exposed, so
+  the wrapper cannot be rebuilt from an overridden compiler without an overlay
+  applied where the package set is constructed.
+
+The fix belongs in `logos-nix`: bump `nixpkgs-windows` far enough to carry Nim
+2.2.10, or apply an overlay inside `mkWindowsPkgs`. Doing it here by importing a
+second nixpkgs would put two builds of `libstdc++-6.dll` in one directory, which
+resolves by filename and would be a worse problem than the one it solves.
+
 ## Development
 
 ```bash
