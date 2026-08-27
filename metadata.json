@@ -1,7 +1,7 @@
 {
   "name": "verified_proxy_module",
-  "display_name": "Verified Proxy",
-  "version": "0.1.0",
+  "display_name": "Verified Proxy Module",
+  "version": "0.1.1",
   "description": "Light-client-verified Ethereum JSON-RPC, wrapping nimbus libverifproxy",
   "author": "Logos Core Team",
   "type": "core",
