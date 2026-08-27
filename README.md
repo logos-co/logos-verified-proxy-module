@@ -68,7 +68,8 @@ impossible without it. (Infura notably does not.)
 | `supportedNetworks()` | The accepted networks with their chain ids and a default endpoint pair. Build a UI selector from this, not a hardcoded list. |
 | `fetchFinalizedRoot(beaconUrl)` | Convenience: asks a beacon node for its current finalized root. **Not** a trust anchor — see below. |
 | `rpc(method, params)` | Any method the proxy supports. `params` is a JSON-RPC array. |
-| `ethBlockNumber()`, `ethGetBalance(...)`, `ethCall(...)`, … | Typed wrappers over the same path. |
+| `ethBlockNumber()`, `ethGetBalance(...)`, `ethCall(...)`, … | 30 typed `eth*` wrappers over the same path. |
+| `opBlockNumber()`, `opGetBalance(...)`, … | The 30 `op*` mirrors. Need an OP-Stack network and `opExecutionApiUrls`. |
 
 Events: `proxyStarted`, `proxyStopped`, `proxyStateChanged`.
 

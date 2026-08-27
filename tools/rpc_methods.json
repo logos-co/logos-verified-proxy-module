@@ -1,0 +1,380 @@
+[
+ {
+  "rpc": "eth_chainId",
+  "params": []
+ },
+ {
+  "rpc": "eth_blockNumber",
+  "params": []
+ },
+ {
+  "rpc": "eth_syncing",
+  "params": []
+ },
+ {
+  "rpc": "eth_getBalance",
+  "params": [
+   "str",
+   "str"
+  ]
+ },
+ {
+  "rpc": "eth_getStorageAt",
+  "params": [
+   "str",
+   "str",
+   "str"
+  ]
+ },
+ {
+  "rpc": "eth_getTransactionCount",
+  "params": [
+   "str",
+   "str"
+  ]
+ },
+ {
+  "rpc": "eth_getCode",
+  "params": [
+   "str",
+   "str"
+  ]
+ },
+ {
+  "rpc": "eth_getBlockByHash",
+  "params": [
+   "str",
+   "bool"
+  ]
+ },
+ {
+  "rpc": "eth_getBlockByNumber",
+  "params": [
+   "str",
+   "bool"
+  ]
+ },
+ {
+  "rpc": "eth_getUncleCountByBlockNumber",
+  "params": [
+   "str"
+  ]
+ },
+ {
+  "rpc": "eth_getUncleCountByBlockHash",
+  "params": [
+   "str"
+  ]
+ },
+ {
+  "rpc": "eth_getBlockTransactionCountByNumber",
+  "params": [
+   "str"
+  ]
+ },
+ {
+  "rpc": "eth_getBlockTransactionCountByHash",
+  "params": [
+   "str"
+  ]
+ },
+ {
+  "rpc": "eth_getTransactionByBlockNumberAndIndex",
+  "params": [
+   "str",
+   "u64"
+  ]
+ },
+ {
+  "rpc": "eth_getTransactionByBlockHashAndIndex",
+  "params": [
+   "str",
+   "u64"
+  ]
+ },
+ {
+  "rpc": "eth_call",
+  "params": [
+   "json",
+   "str",
+   "bool"
+  ]
+ },
+ {
+  "rpc": "eth_createAccessList",
+  "params": [
+   "json",
+   "str",
+   "bool"
+  ]
+ },
+ {
+  "rpc": "eth_estimateGas",
+  "params": [
+   "json",
+   "str",
+   "bool"
+  ]
+ },
+ {
+  "rpc": "eth_getTransactionByHash",
+  "params": [
+   "str"
+  ]
+ },
+ {
+  "rpc": "eth_getBlockReceipts",
+  "params": [
+   "str"
+  ]
+ },
+ {
+  "rpc": "eth_getTransactionReceipt",
+  "params": [
+   "str"
+  ]
+ },
+ {
+  "rpc": "eth_getLogs",
+  "params": [
+   "json"
+  ]
+ },
+ {
+  "rpc": "eth_newFilter",
+  "params": [
+   "json"
+  ]
+ },
+ {
+  "rpc": "eth_uninstallFilter",
+  "params": [
+   "str"
+  ]
+ },
+ {
+  "rpc": "eth_getFilterLogs",
+  "params": [
+   "str"
+  ]
+ },
+ {
+  "rpc": "eth_getFilterChanges",
+  "params": [
+   "str"
+  ]
+ },
+ {
+  "rpc": "eth_blobBaseFee",
+  "params": []
+ },
+ {
+  "rpc": "eth_gasPrice",
+  "params": []
+ },
+ {
+  "rpc": "eth_maxPriorityFeePerGas",
+  "params": []
+ },
+ {
+  "rpc": "eth_feeHistory",
+  "params": [
+   "u64",
+   "str",
+   "json"
+  ]
+ },
+ {
+  "rpc": "eth_sendRawTransaction",
+  "params": [
+   "str"
+  ]
+ },
+ {
+  "rpc": "op_chainId",
+  "params": []
+ },
+ {
+  "rpc": "op_blockNumber",
+  "params": []
+ },
+ {
+  "rpc": "op_getBalance",
+  "params": [
+   "str",
+   "str"
+  ]
+ },
+ {
+  "rpc": "op_getStorageAt",
+  "params": [
+   "str",
+   "str",
+   "str"
+  ]
+ },
+ {
+  "rpc": "op_getTransactionCount",
+  "params": [
+   "str",
+   "str"
+  ]
+ },
+ {
+  "rpc": "op_getCode",
+  "params": [
+   "str",
+   "str"
+  ]
+ },
+ {
+  "rpc": "op_getBlockByHash",
+  "params": [
+   "str",
+   "bool"
+  ]
+ },
+ {
+  "rpc": "op_getBlockByNumber",
+  "params": [
+   "str",
+   "bool"
+  ]
+ },
+ {
+  "rpc": "op_getUncleCountByBlockNumber",
+  "params": [
+   "str"
+  ]
+ },
+ {
+  "rpc": "op_getUncleCountByBlockHash",
+  "params": [
+   "str"
+  ]
+ },
+ {
+  "rpc": "op_getBlockTransactionCountByNumber",
+  "params": [
+   "str"
+  ]
+ },
+ {
+  "rpc": "op_getBlockTransactionCountByHash",
+  "params": [
+   "str"
+  ]
+ },
+ {
+  "rpc": "op_getTransactionByBlockNumberAndIndex",
+  "params": [
+   "str",
+   "u64"
+  ]
+ },
+ {
+  "rpc": "op_getTransactionByBlockHashAndIndex",
+  "params": [
+   "str",
+   "u64"
+  ]
+ },
+ {
+  "rpc": "op_call",
+  "params": [
+   "json",
+   "str",
+   "bool"
+  ]
+ },
+ {
+  "rpc": "op_createAccessList",
+  "params": [
+   "json",
+   "str",
+   "bool"
+  ]
+ },
+ {
+  "rpc": "op_estimateGas",
+  "params": [
+   "json",
+   "str",
+   "bool"
+  ]
+ },
+ {
+  "rpc": "op_getTransactionByHash",
+  "params": [
+   "str"
+  ]
+ },
+ {
+  "rpc": "op_getBlockReceipts",
+  "params": [
+   "str"
+  ]
+ },
+ {
+  "rpc": "op_getTransactionReceipt",
+  "params": [
+   "str"
+  ]
+ },
+ {
+  "rpc": "op_getLogs",
+  "params": [
+   "json"
+  ]
+ },
+ {
+  "rpc": "op_newFilter",
+  "params": [
+   "json"
+  ]
+ },
+ {
+  "rpc": "op_uninstallFilter",
+  "params": [
+   "str"
+  ]
+ },
+ {
+  "rpc": "op_getFilterLogs",
+  "params": [
+   "str"
+  ]
+ },
+ {
+  "rpc": "op_getFilterChanges",
+  "params": [
+   "str"
+  ]
+ },
+ {
+  "rpc": "op_blobBaseFee",
+  "params": []
+ },
+ {
+  "rpc": "op_gasPrice",
+  "params": []
+ },
+ {
+  "rpc": "op_maxPriorityFeePerGas",
+  "params": []
+ },
+ {
+  "rpc": "op_feeHistory",
+  "params": [
+   "u64",
+   "str",
+   "json"
+  ]
+ },
+ {
+  "rpc": "op_sendRawTransaction",
+  "params": [
+   "str"
+  ]
+ }
+]

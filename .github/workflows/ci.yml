@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-installer-action@main
+      - uses: cachix/cachix-action@v15
+        with:
+          name: logos-co
+          authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
+
+      # libverifproxy is a ~25 minute source build of the whole nimbus/Nim
+      # toolchain, so the Logos cache is doing real work here rather than
+      # shaving seconds.
+      - name: Build module
+        run: nix build -L
+
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-installer-action@main
+      - uses: cachix/cachix-action@v15
+        with:
+          name: logos-co
+          authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
+
+      # The check derivation RUNS the suite as part of building it, so a red
+      # test is a failed build. Named explicitly rather than via `nix flake
+      # check`, which would also evaluate the x86_64-windows pseudo-system.
+      - name: Unit tests
+        run: |
+          nix build -L ".#checks.$(nix eval --impure --raw --expr builtins.currentSystem).unit-tests"
+
+  codegen:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The 60 typed eth_*/op_* wrappers are generated from the library's own
+      # dispatch table but COMMITTED as literal text, because the module's code
+      # generator parses verified_proxy_impl.h as text and cannot see through a
+      # macro. This proves nobody hand-edited the generated blocks, and that a
+      # bumped nimbus input has not left them behind.
+      - name: RPC wrappers match the generator
+        run: python3 tools/gen_rpc_methods.py --check

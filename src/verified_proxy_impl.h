@@ -202,35 +202,297 @@ public:
     ///
     /// Returns the decoded result value on success.
     StdLogosResult rpc(const std::string& method, const LogosList& params);
-
-    /// Current verified head block number.
-    ///
-    /// Returns a JSON **number**, not a hex quantity string — upstream's
-    /// encoding is not uniform (`ethChainId` and `ethGasPrice` do return hex
-    /// strings). Measured against sepolia, not inferred from the JSON-RPC spec.
-    StdLogosResult ethBlockNumber();
-
-    /// The chain id the proxy is configured for, as a hex quantity string.
+    // BEGIN GENERATED RPC WRAPPERS -- edit tools/gen_rpc_methods.py, not this
+    /// `eth_chainId`, verified.
     StdLogosResult ethChainId();
 
-    /// Verified account balance in wei, as a hex quantity string.
-    /// `blockTag` is "latest", "pending", "earliest", or a hex block number.
+    /// `eth_blockNumber`, verified.
+    StdLogosResult ethBlockNumber();
+
+    /// `eth_getBalance`, verified.
     StdLogosResult ethGetBalance(const std::string& address, const std::string& blockTag);
 
-    /// Verified contract code at `address`, as a hex byte string.
+    /// `eth_getStorageAt`, verified.
+    StdLogosResult ethGetStorageAt(const std::string& address, const std::string& slot, const std::string& blockTag);
+
+    /// `eth_getTransactionCount`, verified.
+    StdLogosResult ethGetTransactionCount(const std::string& address, const std::string& blockTag);
+
+    /// `eth_getCode`, verified.
     StdLogosResult ethGetCode(const std::string& address, const std::string& blockTag);
 
-    /// Verified block. `fullTransactions` selects full objects over hashes.
+    /// `eth_getBlockByHash`, verified.
+    StdLogosResult ethGetBlockByHash(const std::string& blockHash, bool fullTransactions);
+
+    /// `eth_getBlockByNumber`, verified.
     StdLogosResult ethGetBlockByNumber(const std::string& blockTag, bool fullTransactions);
 
-    /// Verified `eth_call`. `txArgs` is a transaction object ({to, data, ...}).
-    /// `optimisticStateFetch` trades a stricter state check for latency.
-    StdLogosResult ethCall(const LogosMap& txArgs, const std::string& blockTag,
-                           bool optimisticStateFetch);
+    /// `eth_getUncleCountByBlockNumber`, verified.
+    StdLogosResult ethGetUncleCountByBlockNumber(const std::string& blockTag);
 
-    /// Verified transaction by index within a block.
-    StdLogosResult ethGetTransactionByBlockNumberAndIndex(const std::string& blockTag,
-                                                          uint64_t index);
+    /// `eth_getUncleCountByBlockHash`, verified.
+    StdLogosResult ethGetUncleCountByBlockHash(const std::string& blockHash);
+
+    /// `eth_getBlockTransactionCountByNumber`, verified.
+    StdLogosResult ethGetBlockTransactionCountByNumber(const std::string& blockTag);
+
+    /// `eth_getBlockTransactionCountByHash`, verified.
+    StdLogosResult ethGetBlockTransactionCountByHash(const std::string& blockHash);
+
+    /// `eth_getTransactionByBlockNumberAndIndex`, verified.
+    StdLogosResult ethGetTransactionByBlockNumberAndIndex(const std::string& blockTag, uint64_t index);
+
+    /// `eth_getTransactionByBlockHashAndIndex`, verified.
+    StdLogosResult ethGetTransactionByBlockHashAndIndex(const std::string& blockHash, uint64_t index);
+
+    /// `eth_call`, verified.
+    ///
+    /// `optimisticStateFetch` is upstream's own extension to the standard
+    /// JSON-RPC signature, not a parameter callers will know from elsewhere.
+    StdLogosResult ethCall(const LogosMap& txArgs, const std::string& blockTag, bool optimisticStateFetch);
+
+    /// `eth_createAccessList`, verified.
+    ///
+    /// `optimisticStateFetch` is upstream's own extension to the standard
+    /// JSON-RPC signature, not a parameter callers will know from elsewhere.
+    StdLogosResult ethCreateAccessList(const LogosMap& txArgs, const std::string& blockTag, bool optimisticStateFetch);
+
+    /// `eth_estimateGas`, verified.
+    ///
+    /// `optimisticStateFetch` is upstream's own extension to the standard
+    /// JSON-RPC signature, not a parameter callers will know from elsewhere.
+    StdLogosResult ethEstimateGas(const LogosMap& txArgs, const std::string& blockTag, bool optimisticStateFetch);
+
+    /// `eth_getTransactionByHash`, verified.
+    StdLogosResult ethGetTransactionByHash(const std::string& txHash);
+
+    /// `eth_getBlockReceipts`, verified.
+    StdLogosResult ethGetBlockReceipts(const std::string& blockTag);
+
+    /// `eth_getTransactionReceipt`, verified.
+    StdLogosResult ethGetTransactionReceipt(const std::string& txHash);
+
+    /// `eth_getLogs`, verified.
+    StdLogosResult ethGetLogs(const LogosMap& filterOptions);
+
+    /// `eth_newFilter`, verified.
+    StdLogosResult ethNewFilter(const LogosMap& filterOptions);
+
+    /// `eth_uninstallFilter`, verified.
+    StdLogosResult ethUninstallFilter(const std::string& filterId);
+
+    /// `eth_getFilterLogs`, verified.
+    StdLogosResult ethGetFilterLogs(const std::string& filterId);
+
+    /// `eth_getFilterChanges`, verified.
+    StdLogosResult ethGetFilterChanges(const std::string& filterId);
+
+    /// `eth_blobBaseFee`, verified.
+    StdLogosResult ethBlobBaseFee();
+
+    /// `eth_gasPrice`, verified.
+    StdLogosResult ethGasPrice();
+
+    /// `eth_maxPriorityFeePerGas`, verified.
+    StdLogosResult ethMaxPriorityFeePerGas();
+
+    /// `eth_feeHistory`, verified.
+    StdLogosResult ethFeeHistory(uint64_t blockCount, const std::string& newestBlock, const LogosList& rewardPercentiles);
+
+    /// `eth_sendRawTransaction`, verified.
+    StdLogosResult ethSendRawTransaction(const std::string& txHexBytes);
+
+    /// `op_chainId`, verified.
+    ///
+    /// Requires an OP-Stack network and `opExecutionApiUrls`; otherwise the
+    /// library answers with a clear error rather than a wrong value.
+    StdLogosResult opChainId();
+
+    /// `op_blockNumber`, verified.
+    ///
+    /// Requires an OP-Stack network and `opExecutionApiUrls`; otherwise the
+    /// library answers with a clear error rather than a wrong value.
+    StdLogosResult opBlockNumber();
+
+    /// `op_getBalance`, verified.
+    ///
+    /// Requires an OP-Stack network and `opExecutionApiUrls`; otherwise the
+    /// library answers with a clear error rather than a wrong value.
+    StdLogosResult opGetBalance(const std::string& address, const std::string& blockTag);
+
+    /// `op_getStorageAt`, verified.
+    ///
+    /// Requires an OP-Stack network and `opExecutionApiUrls`; otherwise the
+    /// library answers with a clear error rather than a wrong value.
+    StdLogosResult opGetStorageAt(const std::string& address, const std::string& slot, const std::string& blockTag);
+
+    /// `op_getTransactionCount`, verified.
+    ///
+    /// Requires an OP-Stack network and `opExecutionApiUrls`; otherwise the
+    /// library answers with a clear error rather than a wrong value.
+    StdLogosResult opGetTransactionCount(const std::string& address, const std::string& blockTag);
+
+    /// `op_getCode`, verified.
+    ///
+    /// Requires an OP-Stack network and `opExecutionApiUrls`; otherwise the
+    /// library answers with a clear error rather than a wrong value.
+    StdLogosResult opGetCode(const std::string& address, const std::string& blockTag);
+
+    /// `op_getBlockByHash`, verified.
+    ///
+    /// Requires an OP-Stack network and `opExecutionApiUrls`; otherwise the
+    /// library answers with a clear error rather than a wrong value.
+    StdLogosResult opGetBlockByHash(const std::string& blockHash, bool fullTransactions);
+
+    /// `op_getBlockByNumber`, verified.
+    ///
+    /// Requires an OP-Stack network and `opExecutionApiUrls`; otherwise the
+    /// library answers with a clear error rather than a wrong value.
+    StdLogosResult opGetBlockByNumber(const std::string& blockTag, bool fullTransactions);
+
+    /// `op_getUncleCountByBlockNumber`, verified.
+    ///
+    /// Requires an OP-Stack network and `opExecutionApiUrls`; otherwise the
+    /// library answers with a clear error rather than a wrong value.
+    StdLogosResult opGetUncleCountByBlockNumber(const std::string& blockTag);
+
+    /// `op_getUncleCountByBlockHash`, verified.
+    ///
+    /// Requires an OP-Stack network and `opExecutionApiUrls`; otherwise the
+    /// library answers with a clear error rather than a wrong value.
+    StdLogosResult opGetUncleCountByBlockHash(const std::string& blockHash);
+
+    /// `op_getBlockTransactionCountByNumber`, verified.
+    ///
+    /// Requires an OP-Stack network and `opExecutionApiUrls`; otherwise the
+    /// library answers with a clear error rather than a wrong value.
+    StdLogosResult opGetBlockTransactionCountByNumber(const std::string& blockTag);
+
+    /// `op_getBlockTransactionCountByHash`, verified.
+    ///
+    /// Requires an OP-Stack network and `opExecutionApiUrls`; otherwise the
+    /// library answers with a clear error rather than a wrong value.
+    StdLogosResult opGetBlockTransactionCountByHash(const std::string& blockHash);
+
+    /// `op_getTransactionByBlockNumberAndIndex`, verified.
+    ///
+    /// Requires an OP-Stack network and `opExecutionApiUrls`; otherwise the
+    /// library answers with a clear error rather than a wrong value.
+    StdLogosResult opGetTransactionByBlockNumberAndIndex(const std::string& blockTag, uint64_t index);
+
+    /// `op_getTransactionByBlockHashAndIndex`, verified.
+    ///
+    /// Requires an OP-Stack network and `opExecutionApiUrls`; otherwise the
+    /// library answers with a clear error rather than a wrong value.
+    StdLogosResult opGetTransactionByBlockHashAndIndex(const std::string& blockHash, uint64_t index);
+
+    /// `op_call`, verified.
+    ///
+    /// `optimisticStateFetch` is upstream's own extension to the standard
+    /// JSON-RPC signature, not a parameter callers will know from elsewhere.
+    ///
+    /// Requires an OP-Stack network and `opExecutionApiUrls`; otherwise the
+    /// library answers with a clear error rather than a wrong value.
+    StdLogosResult opCall(const LogosMap& txArgs, const std::string& blockTag, bool optimisticStateFetch);
+
+    /// `op_createAccessList`, verified.
+    ///
+    /// `optimisticStateFetch` is upstream's own extension to the standard
+    /// JSON-RPC signature, not a parameter callers will know from elsewhere.
+    ///
+    /// Requires an OP-Stack network and `opExecutionApiUrls`; otherwise the
+    /// library answers with a clear error rather than a wrong value.
+    StdLogosResult opCreateAccessList(const LogosMap& txArgs, const std::string& blockTag, bool optimisticStateFetch);
+
+    /// `op_estimateGas`, verified.
+    ///
+    /// `optimisticStateFetch` is upstream's own extension to the standard
+    /// JSON-RPC signature, not a parameter callers will know from elsewhere.
+    ///
+    /// Requires an OP-Stack network and `opExecutionApiUrls`; otherwise the
+    /// library answers with a clear error rather than a wrong value.
+    StdLogosResult opEstimateGas(const LogosMap& txArgs, const std::string& blockTag, bool optimisticStateFetch);
+
+    /// `op_getTransactionByHash`, verified.
+    ///
+    /// Requires an OP-Stack network and `opExecutionApiUrls`; otherwise the
+    /// library answers with a clear error rather than a wrong value.
+    StdLogosResult opGetTransactionByHash(const std::string& txHash);
+
+    /// `op_getBlockReceipts`, verified.
+    ///
+    /// Requires an OP-Stack network and `opExecutionApiUrls`; otherwise the
+    /// library answers with a clear error rather than a wrong value.
+    StdLogosResult opGetBlockReceipts(const std::string& blockTag);
+
+    /// `op_getTransactionReceipt`, verified.
+    ///
+    /// Requires an OP-Stack network and `opExecutionApiUrls`; otherwise the
+    /// library answers with a clear error rather than a wrong value.
+    StdLogosResult opGetTransactionReceipt(const std::string& txHash);
+
+    /// `op_getLogs`, verified.
+    ///
+    /// Requires an OP-Stack network and `opExecutionApiUrls`; otherwise the
+    /// library answers with a clear error rather than a wrong value.
+    StdLogosResult opGetLogs(const LogosMap& filterOptions);
+
+    /// `op_newFilter`, verified.
+    ///
+    /// Requires an OP-Stack network and `opExecutionApiUrls`; otherwise the
+    /// library answers with a clear error rather than a wrong value.
+    StdLogosResult opNewFilter(const LogosMap& filterOptions);
+
+    /// `op_uninstallFilter`, verified.
+    ///
+    /// Requires an OP-Stack network and `opExecutionApiUrls`; otherwise the
+    /// library answers with a clear error rather than a wrong value.
+    StdLogosResult opUninstallFilter(const std::string& filterId);
+
+    /// `op_getFilterLogs`, verified.
+    ///
+    /// Requires an OP-Stack network and `opExecutionApiUrls`; otherwise the
+    /// library answers with a clear error rather than a wrong value.
+    StdLogosResult opGetFilterLogs(const std::string& filterId);
+
+    /// `op_getFilterChanges`, verified.
+    ///
+    /// Requires an OP-Stack network and `opExecutionApiUrls`; otherwise the
+    /// library answers with a clear error rather than a wrong value.
+    StdLogosResult opGetFilterChanges(const std::string& filterId);
+
+    /// `op_blobBaseFee`, verified.
+    ///
+    /// Requires an OP-Stack network and `opExecutionApiUrls`; otherwise the
+    /// library answers with a clear error rather than a wrong value.
+    StdLogosResult opBlobBaseFee();
+
+    /// `op_gasPrice`, verified.
+    ///
+    /// Requires an OP-Stack network and `opExecutionApiUrls`; otherwise the
+    /// library answers with a clear error rather than a wrong value.
+    StdLogosResult opGasPrice();
+
+    /// `op_maxPriorityFeePerGas`, verified.
+    ///
+    /// Requires an OP-Stack network and `opExecutionApiUrls`; otherwise the
+    /// library answers with a clear error rather than a wrong value.
+    StdLogosResult opMaxPriorityFeePerGas();
+
+    /// `op_feeHistory`, verified.
+    ///
+    /// Requires an OP-Stack network and `opExecutionApiUrls`; otherwise the
+    /// library answers with a clear error rather than a wrong value.
+    StdLogosResult opFeeHistory(uint64_t blockCount, const std::string& newestBlock, const LogosList& rewardPercentiles);
+
+    /// `op_sendRawTransaction`, verified.
+    ///
+    /// Requires an OP-Stack network and `opExecutionApiUrls`; otherwise the
+    /// library answers with a clear error rather than a wrong value.
+    StdLogosResult opSendRawTransaction(const std::string& txHexBytes);
+
+    // END GENERATED RPC WRAPPERS
+
 
 logos_events:
     /// Emitted when start() finishes. {"success":bool,"chainId":number,"error":string}

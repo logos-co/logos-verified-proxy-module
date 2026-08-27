@@ -22,6 +22,7 @@ logos_test(
         ../src/proxy_config.cpp
         ../src/proxy_runtime.cpp
         ../src/verified_proxy_impl.cpp
+        ../src/verified_proxy_rpc.cpp
         ../src/rpc_http_server.cpp
         ../src/beacon_client.cpp
     TEST_SOURCES

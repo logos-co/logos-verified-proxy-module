@@ -18,6 +18,7 @@ logos_module(
     SOURCES
         src/verified_proxy_impl.h
         src/verified_proxy_impl.cpp
+        src/verified_proxy_rpc.cpp
         src/proxy_config.h
         src/proxy_config.cpp
         src/proxy_runtime.h
