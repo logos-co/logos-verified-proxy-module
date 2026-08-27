@@ -247,6 +247,24 @@ single `eth_blockNumber` in that run took **12.6 s**, against a 30 s default
   root taken from the same endpoint you are about to verify against anchors
   nothing. For anything holding real value, obtain the root independently.
 
+## Executable tutorial
+
+`doctests/verified-proxy-runtime.test.yaml` is a tutorial that is also a test.
+It packages this commit as an `.lgx`, installs it, starts a `logoscore` daemon,
+configures the proxy from a freshly fetched trusted root, bootstraps the light
+client against **live Sepolia**, makes verified calls, and compares one against
+the untrusted provider so the head lag is visible rather than asserted.
+
+It talks to the real network deliberately. A verified proxy that cannot reach a
+beacon node and prove its way to the chain head is not doing the one thing it
+exists for, and mocking that away would prove nothing. The cost is that a
+network or endpoint outage turns the doc-test red for reasons outside this repo,
+which is why it is a separate workflow from CI.
+
+```bash
+nix run github:logos-co/logos-doctest -- run doctests/verified-proxy-runtime.test.yaml --verbose
+```
+
 ## Development
 
 ```bash

@@ -1,0 +1,94 @@
+name: verified-proxy Doc-Tests
+
+# Runs the executable doc-test end-to-end via the shared doctest CLI:
+#   - verified-proxy-runtime.test.yaml: packages and installs THIS commit as an
+#     .lgx, starts a logoscore daemon, loads the module, configures the proxy
+#     from a freshly fetched trusted root, bootstraps the light client against
+#     LIVE Sepolia, makes verified calls, and shuts down.
+#
+# This spec talks to the real network on purpose. A verified proxy that cannot
+# reach a beacon node and prove its way to the chain head is not doing the one
+# thing it exists to do, and no amount of mocking would tell us it works. The
+# cost is that a Sepolia or endpoint outage turns this job red for reasons
+# outside the repo — which is why it is a separate workflow from CI, and why CI
+# stays green on its own.
+
+on:
+  pull_request:
+    branches: [master, main]
+  push:
+    branches: [master, main]
+  workflow_dispatch:
+
+concurrency:
+  group: doctests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  doctests:
+    name: verified-proxy doc-tests (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    runs-on: ${{ matrix.os }}
+    # Generous: on a cold cache this builds libverifproxy, which is a source
+    # build of nimbus's Nim toolchain, before the light client has even started.
+    timeout-minutes: 150
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Setup Cachix
+        uses: cachix/cachix-action@v15
+        with:
+          name: logos-co
+          authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
+
+      # Resolve the commit under test, so the spec packages THIS commit rather
+      # than the latest published flake. Fork PRs are the exception: their head
+      # commit lives in the fork, so `github:logos-co/...#<sha>` could not be
+      # fetched — blank the SHA there and run against master instead.
+      - name: Resolve commit under test
+        id: commit
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ] && \
+             [ "${{ github.event.pull_request.head.repo.fork }}" = "true" ]; then
+            echo "sha=" >> "$GITHUB_OUTPUT"
+            echo "Fork PR detected — doc-test will run against latest master."
+          else
+            echo "sha=${{ github.event.pull_request.head.sha || github.sha }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run verified-proxy doc-tests
+        run: |
+          nix run github:logos-co/logos-doctest -- run \
+            doctests/verified-proxy-runtime.test.yaml \
+            --verbose \
+            --continue-on-fail \
+            --release-for logos-verified-proxy-module=${{ steps.commit.outputs.sha }} \
+            --report "${{ runner.temp }}/verified-proxy-doctest-report.html"
+
+      - name: Stage report for upload
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p report-out
+          if [ -f "${{ runner.temp }}/verified-proxy-doctest-report.html" ]; then
+            cp "${{ runner.temp }}/verified-proxy-doctest-report.html" report-out/index.html
+          else
+            echo "<h1>No report produced</h1>" > report-out/index.html
+          fi
+
+      - name: Upload execution report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: verified-proxy-doctest-report-${{ matrix.os }}
+          path: report-out/index.html

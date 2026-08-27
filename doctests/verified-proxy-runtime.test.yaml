@@ -1,0 +1,309 @@
+name: "Running a Light-Client-Verified Ethereum Proxy"
+output: verified-proxy-runtime.md
+release: ""
+
+intro: |
+  In this tutorial you will run a **trust-minimised** Ethereum RPC endpoint from
+  source.
+
+  Ordinary RPC asks a provider for an answer and believes it. This module runs
+  [nimbus's verified proxy](https://github.com/status-im/nimbus-eth1/tree/master/nimbus_verified_proxy)
+  instead: it syncs the beacon-chain light client from a trusted block root and
+  verifies every `eth_*` response against the attested execution state,
+  requesting Merkle proofs from the provider it does not trust.
+
+  You will:
+
+  1. Build the Logos runtime (`logoscore`) and the local package manager (`lgpm`).
+  2. Build **this** module as an installable `.lgx` package and install it.
+  3. Start the daemon, load the module, and introspect its 60-method surface.
+  4. Fetch a finalized block root, configure the proxy with **two fields**, and
+     start it — watching the light client bootstrap against a live network.
+  5. Make verified calls and compare one against the untrusted provider directly,
+     to see the light client's lag for yourself.
+
+  This is an **executable tutorial**: it runs automatically on every module
+  change, against the live Sepolia network.
+
+what_you_build: "A running, light-client-verified Ethereum RPC proxy on Sepolia — configured, started, queried, and stopped through the `logoscore` CLI."
+
+what_you_learn:
+  - How to build the Logos runtime and the `lgpm` package manager from source
+  - How a module's Nix flake exposes a ready-to-install `.lgx` via its `#lgx` output
+  - How to start the `logoscore` daemon, load a module, and introspect its methods
+  - Why a *trusted block root* is the anchor of the whole trust model, and how to get one
+  - How per-network defaults make a two-field configuration sufficient
+  - How to make verified `eth_*` calls, and why the verified head lags the provider's
+
+prerequisites:
+  - |
+    **Nix** with flakes enabled. Install from [nixos.org](https://nixos.org/download.html), then enable flakes:
+
+    ```bash
+    mkdir -p ~/.config/nix
+    echo 'experimental-features = nix-command flakes' >> ~/.config/nix/nix.conf
+    ```
+
+    Verify: `nix flake --help >/dev/null 2>&1 && echo "Flakes enabled"`
+  - "**A Linux or macOS machine.**"
+  - "**`jq`** on your `PATH` — used to pull values out of the JSON replies. Verify: `jq --version`"
+  - "**Network access.** This tutorial syncs a real light client against Sepolia."
+
+sections:
+  - title: "Build the Logos daemon"
+    step: true
+    text: |
+      Build the Logos runtime CLI from its published flake. `logoscore` is the
+      headless frontend for [`logos-liblogos`](https://github.com/logos-co/logos-liblogos);
+      it runs as a daemon and brings in the whole module-runtime stack.
+    steps:
+      - title: "Build the CLI"
+        run: "nix build 'github:logos-co/logos-logoscore-cli' --out-link ./logos"
+        code_block: |
+          nix build 'github:logos-co/logos-logoscore-cli' --out-link ./logos
+        check_file: "logos/bin/logoscore"
+        post_text: |
+          The build produces `logos/bin/logoscore` plus a `logos/modules/`
+          directory containing the built-in `capability_module`, which the auth
+          handshake needs when loading modules.
+
+  - title: "Build the lgpm package manager"
+    step: true
+    text: |
+      `lgpm` installs `.lgx` packages into a modules directory and scans what is
+      installed.
+    steps:
+      - title: "Build lgpm"
+        run: "nix build 'github:logos-co/logos-package-manager#cli' -o lgpm"
+        check_file: "lgpm/bin/lgpm"
+
+  - title: "Build and install this module"
+    step: true
+    text: |
+      Build **this** module's `.lgx` straight from its flake's `#lgx` output.
+
+      Be warned that the first build is genuinely slow: the module links
+      `libverifproxy`, which is a source build of nimbus's Nim toolchain. The
+      Logos binary cache usually has it already.
+    steps:
+      - title: "Build the module's .lgx"
+        run: "nix build 'github:logos-co/logos-verified-proxy-module{release}#lgx' -o proxy-lgx"
+        code_block: |
+          # From inside the clone this is simply: nix build '.#lgx'
+          nix build 'github:logos-co/logos-verified-proxy-module{release}#lgx' -o proxy-lgx
+        post_text: "The `.lgx` package is now under `./proxy-lgx/`:"
+        extra_run:
+          run: "ls proxy-lgx/*.lgx"
+
+      - title: "Install the .lgx with lgpm"
+        text: |
+          `verified_proxy_module` is a `core` module, so it goes to
+          `--modules-dir`. The package is unsigned (a local dev build), so we
+          pass `--allow-unsigned`.
+        run: "./lgpm/bin/lgpm --modules-dir ./modules --allow-unsigned install --file proxy-lgx/*.lgx"
+        expect_contains:
+          - "Installed to:"
+
+      - title: "Confirm the install"
+        run: "./lgpm/bin/lgpm --modules-dir ./modules list"
+        expect_contains:
+          - "verified_proxy_module"
+        check_file: "modules/verified_proxy_module/manifest.json"
+
+  - title: "Start the daemon and load the module"
+    step: true
+    text: |
+      Start `logoscore` in daemon mode pointed at `./modules`. Daemon output goes
+      to `logs.txt` — worth watching, because the light client's own progress is
+      logged there and nowhere else.
+    steps:
+      - title: "Start the daemon"
+        run: "sh -c './logos/bin/logoscore -D -m ./modules > logs.txt 2>&1 &'"
+        code_block: "logoscore -D -m ./modules > logs.txt &"
+
+      - run: "sleep 3"
+
+      - title: "Load the module"
+        run: "./logos/bin/logoscore load-module verified_proxy_module"
+        code_block: "logoscore load-module verified_proxy_module"
+        expect_contains:
+          - "verified_proxy_module"
+
+      - title: "Introspect the method surface"
+        text: |
+          The module mirrors the library's whole dispatch table: 30 `eth*`
+          methods and 30 `op*` mirrors, plus configuration and lifecycle. They
+          are generated from the library's own table rather than hand-written.
+        run: "./logos/bin/logoscore module-info verified_proxy_module"
+        code_block: "logoscore module-info verified_proxy_module"
+        expect_contains:
+          - "verified_proxy_module"
+          - "ethBlockNumber"
+          - "ethGetBalance"
+          - "supportedNetworks"
+
+  - title: "Configure the proxy"
+    step: true
+    text: |
+      The proxy needs to know which chain to verify, where to reach a beacon and
+      an execution endpoint, and — critically — a **trusted block root**.
+    steps:
+      - title: "See which networks are supported"
+        text: |
+          Each entry carries its chain id and a default endpoint pair. Build a UI
+          selector from this rather than hardcoding a list: an unrecognised
+          `network` reaches a `quit()` inside the Nim library and would take the
+          whole host process down.
+        run: "./logos/bin/logoscore call verified_proxy_module supportedNetworks"
+        code_block: "logoscore call verified_proxy_module supportedNetworks"
+        expect_contains:
+          - "sepolia"
+          - "mainnet"
+          - "hoodi"
+
+      - title: "Look at a default configuration"
+        text: |
+          `defaultConfig` returns a complete, ready-to-edit template for a
+          network. Note that `trustedBlockRoot` is deliberately **empty** — it
+          anchors the entire trust model, so it is the one field that cannot be
+          defaulted.
+        run: "./logos/bin/logoscore call verified_proxy_module defaultConfig sepolia"
+        code_block: "logoscore call verified_proxy_module defaultConfig sepolia"
+        expect_contains:
+          - "lodestar-sepolia"
+          - "trustedBlockRoot"
+
+      - title: "Fetch a finalized block root"
+        text: |
+          The root is where trust enters the system. Here we ask the module to
+          fetch the current finalized root from a beacon node, which is fine for
+          getting started — but understand what it is not: a root taken from the
+          same endpoint you are about to verify against proves nothing. For
+          anything holding real value, obtain the root from a source you
+          independently trust and paste it in.
+        run: "./logos/bin/logoscore call verified_proxy_module fetchFinalizedRoot https://lodestar-sepolia.chainsafe.io"
+        code_block: |
+          logoscore call verified_proxy_module fetchFinalizedRoot \
+            https://lodestar-sepolia.chainsafe.io
+        expect_contains:
+          - '"success":true'
+          - "root"
+
+      - title: "Configure with two fields"
+        text: |
+          Everything else comes from the network's defaults, so a working
+          configuration is just the chain and the root:
+        run: |
+          ROOT=$(./logos/bin/logoscore call verified_proxy_module fetchFinalizedRoot https://lodestar-sepolia.chainsafe.io | jq -r '.result.value.root')
+          echo "trusted root: $ROOT"
+          ./logos/bin/logoscore call verified_proxy_module configure "json:{\"network\":\"sepolia\",\"trustedBlockRoot\":\"$ROOT\"}"
+        code_block: |
+          ROOT=$(logoscore call verified_proxy_module fetchFinalizedRoot \
+                   https://lodestar-sepolia.chainsafe.io | jq -r '.result.value.root')
+          logoscore call verified_proxy_module configure \
+            "json:{\"network\":\"sepolia\",\"trustedBlockRoot\":\"$ROOT\"}"
+        expect_contains:
+          - '"success":true'
+
+      - title: "Confirm the defaults were filled in"
+        text: |
+          The endpoints we never supplied are now set, and the configuration has
+          been persisted — it will be reloaded automatically next time the module
+          starts.
+        run: "./logos/bin/logoscore call verified_proxy_module getConfig"
+        code_block: "logoscore call verified_proxy_module getConfig"
+        expect_contains:
+          - "lodestar-sepolia.chainsafe.io"
+          - "ethereum-sepolia-rpc.publicnode.com"
+
+  - title: "Start the light client and make verified calls"
+    step: true
+    text: |
+      `start` blocks until the light client has bootstrapped from the trusted
+      root, which takes a little while — it is verifying its way to the chain
+      head, not just opening a socket.
+    steps:
+      - title: "Start the proxy"
+        run: "./logos/bin/logoscore call verified_proxy_module start"
+        code_block: "logoscore call verified_proxy_module start"
+        expect_contains:
+          - '"success":true'
+          - "chainId"
+
+      - title: "Check the state"
+        text: |
+          `running`, with the chain id the light client actually verified against
+          — not merely the one we asked for.
+        run: "./logos/bin/logoscore call verified_proxy_module status"
+        code_block: "logoscore call verified_proxy_module status"
+        expect_contains:
+          - '"state":"running"'
+          - "11155111"
+
+      - title: "A verified block number"
+        run: "./logos/bin/logoscore call verified_proxy_module ethBlockNumber"
+        code_block: "logoscore call verified_proxy_module ethBlockNumber"
+        expect_contains:
+          - '"success":true'
+
+      - title: "Compare against the untrusted provider"
+        text: |
+          Ask the execution endpoint directly and put the two side by side. The
+          verified head is normally a couple of blocks **behind**, and that gap
+          is the point: the proxy reports the head it has proof for, not the one
+          the provider asserts.
+        run: |
+          VERIFIED=$(./logos/bin/logoscore call verified_proxy_module ethBlockNumber | jq -r '.result.value')
+          PROVIDER=$(curl -s -X POST -H 'Content-Type: application/json' \
+            --data '{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}' \
+            https://ethereum-sepolia-rpc.publicnode.com | jq -r '.result')
+          echo "verified: $VERIFIED"
+          echo "provider: $((PROVIDER)) ($PROVIDER)"
+        code_block: |
+          logoscore call verified_proxy_module ethBlockNumber | jq -r '.result.value'
+          curl -s -X POST -H 'Content-Type: application/json' \
+            --data '{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}' \
+            https://ethereum-sepolia-rpc.publicnode.com | jq -r '.result'
+        expect_contains:
+          - "verified:"
+          - "provider:"
+
+      - title: "Some other verified calls"
+        text: "All of these are proved against the attested state, not taken on trust:"
+        run: |
+          ./logos/bin/logoscore call verified_proxy_module ethChainId
+          ./logos/bin/logoscore call verified_proxy_module ethGasPrice
+          ./logos/bin/logoscore call verified_proxy_module ethGetBlockTransactionCountByNumber latest
+        code_block: |
+          logoscore call verified_proxy_module ethChainId
+          logoscore call verified_proxy_module ethGasPrice
+          logoscore call verified_proxy_module ethGetBlockTransactionCountByNumber latest
+        expect_contains:
+          - '"success":true'
+
+  - title: "Shut down"
+    step: true
+    steps:
+      - title: "Stop the proxy"
+        text: |
+          `stop` drains anything in flight before releasing the library's
+          context, so it is not instantaneous.
+        run: "./logos/bin/logoscore call verified_proxy_module stop"
+        code_block: "logoscore call verified_proxy_module stop"
+        expect_contains:
+          - '"success":true'
+
+      - title: "Stop the daemon"
+        run: "./logos/bin/logoscore stop"
+        code_block: "logoscore stop"
+
+      - run: "sleep 2"
+
+      - title: "Confirm the daemon has stopped"
+        text: |
+          With no daemon running the client reports `not_running` and exits
+          non-zero, so we add `|| true` to let the doc-test assert on the output:
+        run: "./logos/bin/logoscore status || true"
+        code_block: "logoscore status"
+        expect_contains:
+          - '"status":"not_running"'
