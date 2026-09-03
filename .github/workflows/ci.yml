@@ -15,6 +15,10 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
+    # Slowest green build on record is 22m52s, and on a cold cache this
+    # becomes the ~25 minute libverifproxy source build noted below. 60 is
+    # roomy for that while still catching a wedged fetch in an hour, not six.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - name: Install Nix and set up the shared cache
@@ -45,6 +49,10 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
+    # Same closure as `build` plus the suite, so it takes the same bound.
+    # test (ubuntu-latest) has never once completed: all six runs on record
+    # hung mid-fetch and died at GitHub's 6 hour ceiling.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - name: Install Nix and set up the shared cache
@@ -71,6 +79,8 @@ jobs:
 
   codegen:
     runs-on: ubuntu-latest
+    # A checkout and one python script; observed worst is 7 seconds.
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
