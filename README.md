@@ -209,6 +209,13 @@ Two consequences worth knowing:
 * `drainTimeoutMs` is a **polling** bound: the drain loop checks its deadline
   between pump calls, so `stop()` — and the destructor join — can overshoot it
   by up to one pump duration. Measured `stop()` in that run: 1102 ms.
+* Every wait in `ProxyRuntime` is bounded and every expiry names itself:
+  `start()`, `stop()` and `call()` return an error carrying the operation, the
+  waiting and proxy thread ids and the runtime's state, and the destructor
+  aborts with the same report if the proxy thread has not left `threadMain`
+  30 s after shutdown was requested. `join()` takes no deadline, so without
+  that a wedged proxy thread hangs its caller — a host, or a CI job — with no
+  output at all.
 
 Verified reads have a much fatter latency tail than a plain RPC call: the worst
 single `eth_blockNumber` in that run took **12.6 s**, against a 30 s default

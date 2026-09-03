@@ -111,6 +111,11 @@ private:
     void setState(State s, const std::string& error = {});
     bool keepAliveEnabled() const;
 
+    /// Who is stuck, where, and on which thread. Every bounded wait ends in
+    /// this string: a job that goes silent names nothing, the same wait
+    /// expiring names the defect.
+    std::string blockedReport(const std::string& what) const;
+
     /// C callback. Runs on the proxy thread; must never let an exception
     /// escape into Nim frames.
     static void callbackTrampoline(Context* ctx, int status, char* result, void* userData);
@@ -163,6 +168,7 @@ private:
     // destructor ends it.
     std::atomic<bool> m_shutdown{false};   // destructor asked the thread to exit
     std::atomic<bool> m_runActive{false};  // between a good startVerifProxy and teardown
+    std::atomic<bool> m_parked{false};     // idle between runs, waiting for a start()
 
     // start()/stop() handshake
     std::mutex m_startMu;
@@ -171,6 +177,7 @@ private:
     bool m_runFinished = true;     // teardown for the current run has completed
     bool m_startDone = false;
     bool m_startOk = false;
+    bool m_threadExited = false;   // threadMain has left its loop
     std::string m_startError;
 
     mutable std::mutex m_errMu;

@@ -3,6 +3,7 @@
 #include <cassert>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <ctime>
 #include <ios>
 #include <sstream>
@@ -18,6 +19,15 @@ using namespace std::chrono;
 namespace {
 
 std::once_flag g_nimMainOnce;
+
+/// A healthy exit from threadMain is sub-millisecond, so no loaded builder
+/// comes near this; it exists only so a thread that never observes m_shutdown
+/// fails in half a minute instead of wedging the process until CI gives up.
+constexpr int kThreadExitDeadlineMs = 30000;
+
+std::string tidOf(std::thread::id id) {
+    std::ostringstream o; o << id; return o.str();
+}
 
 int64_t nowSeconds() {
     return duration_cast<seconds>(system_clock::now().time_since_epoch()).count();
@@ -106,7 +116,43 @@ ProxyRuntime::~ProxyRuntime() {
     m_shutdown = true;
     m_startCv.notify_all();
     m_cv.notify_all();
-    if (m_thread.joinable()) m_thread.join();
+    if (!m_thread.joinable()) return;
+
+    // join() takes no deadline, so a proxy thread that never notices m_shutdown
+    // hangs its caller forever with no output at all. Detaching is not an
+    // option here (the image gets unmapped), so name who is stuck where and die.
+    std::unique_lock<std::mutex> lk(m_startMu);
+    if (!m_startCv.wait_for(lk, milliseconds(kThreadExitDeadlineMs),
+                            [this] { return m_threadExited; })) {
+        const std::string why = blockedReport(
+            "the proxy thread has not left threadMain "
+            + std::to_string(kThreadExitDeadlineMs) + "ms after shutdown was requested");
+        lk.unlock();
+        std::fprintf(stderr, "\nFATAL ProxyRuntime: %s\n", why.c_str());
+        std::fflush(stderr);
+        std::abort();
+    }
+    lk.unlock();
+    m_thread.join();
+}
+
+std::string ProxyRuntime::blockedReport(const std::string& what) const {
+    std::ostringstream o;
+    o << what
+      << " — waiting thread " << tidOf(std::this_thread::get_id())
+      << ", proxy thread " << tidOf(m_threadId)
+      << (m_parked.load() ? " (parked between runs)" : " (inside a run)")
+      << ", state=" << stateName(m_state.load())
+      << ", runActive=" << (m_runActive.load() ? "yes" : "no")
+      << ", stopRequested=" << (m_stopRequested.load() ? "yes" : "no")
+      << ", shutdown=" << (m_shutdown.load() ? "yes" : "no")
+      << ", inFlight=" << m_inFlight.load()
+      << ", pumps=" << m_pumpCalls.load();
+    // try_lock: a diagnostic that can itself block is worse than an incomplete one.
+    std::unique_lock<std::mutex> lk(m_mu, std::try_to_lock);
+    if (lk) o << ", queued=" << m_queue.size() << ", pending=" << m_pending.size();
+    else    o << ", queue depth unknown (m_mu is held)";
+    return o.str();
 }
 
 void ProxyRuntime::setState(State s, const std::string& error) {
@@ -158,8 +204,10 @@ StdLogosResult ProxyRuntime::start(const ProxyConfig& cfg) {
     if (!signalled) {
         // startVerifProxy has an unbounded prologue and no cancel. Leave the
         // run going rather than tearing down underneath it; stop() waits for it.
-        return { false, {}, "timed out after " + std::to_string(m_cfg.startTimeoutMs)
-                            + "ms waiting for the light client to initialise" };
+        lk.unlock();
+        return { false, {}, blockedReport(
+                     "start() timed out after " + std::to_string(m_cfg.startTimeoutMs)
+                     + "ms waiting for the light client to initialise") };
     }
     if (!m_startOk)
         return { false, {}, m_startError };
@@ -188,8 +236,10 @@ StdLogosResult ProxyRuntime::stop() {
     std::unique_lock<std::mutex> lk(m_startMu);
     const bool finished = m_startCv.wait_for(
         lk, milliseconds(m_cfg.drainTimeoutMs + 15000), [this] { return m_runFinished; });
-    if (!finished)
-        return { false, {}, "timed out waiting for the proxy to drain" };
+    if (!finished) {
+        lk.unlock();
+        return { false, {}, blockedReport("stop() timed out waiting for the proxy to drain") };
+    }
 
     return { true, {}, "" };
 }
@@ -210,12 +260,21 @@ void ProxyRuntime::threadMain() {
     for (;;) {
         {
             std::unique_lock<std::mutex> lk(m_startMu);
+            m_parked = true;
             m_startCv.wait(lk, [this] { return m_runRequested || m_shutdown.load(); });
-            if (m_shutdown.load()) return;
+            m_parked = false;
+            if (m_shutdown.load()) break;
             m_runRequested = false;
         }
         runOnce();
     }
+
+    // Tells the destructor's bounded wait "exited" apart from "wedged".
+    {
+        std::lock_guard<std::mutex> lk(m_startMu);
+        m_threadExited = true;
+    }
+    m_startCv.notify_all();
 }
 
 void ProxyRuntime::runOnce() {
@@ -424,7 +483,10 @@ StdLogosResult ProxyRuntime::call(const std::string& method, const json& params)
                            [&] { return slot->done; })) {
         // The slot stays alive — the CallBox owns a share — so a late callback
         // is harmless. There is no per-call cancel in the C API.
-        return { false, {}, "timed out after " + std::to_string(m_cfg.callTimeoutMs) + "ms" };
+        lk.unlock();
+        return { false, {}, blockedReport(
+                     "call(\"" + method + "\", id " + std::to_string(slot->id) + ") timed out after "
+                     + std::to_string(m_cfg.callTimeoutMs) + "ms") };
     }
 
     if (slot->status != RET_SUCCESS)
