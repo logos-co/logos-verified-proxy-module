@@ -9,18 +9,32 @@ on:
 
 jobs:
   build:
+    environment: ${{ (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main') && 'public-cache' || '' }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
+    # Slowest green build on record is 22m52s, and on a cold cache this
+    # becomes the ~25 minute libverifproxy source build noted below. 60 is
+    # roomy for that while still catching a wedged fetch in an hour, not six.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
-      - uses: DeterminateSystems/nix-installer-action@main
-      - uses: cachix/cachix-action@v15
+      - name: Install Nix and set up the shared cache
+        uses: logos-co/setup-nix-cache-action@v1
         with:
-          name: logos-co
-          authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
+          attic-token-ci: ${{ secrets.ATTIC_TOKEN_CI }}
+          attic-token-public: ${{ secrets.ATTIC_TOKEN_PUBLIC }}
+          # Keep READING the old Cachix while the Attic caches fill up. The
+          # rust crate derivations this build needs are in Cachix and in no
+          # other cache -- so dropping it outright did not just cost cache
+          # hits, it turned "substitute a prebuilt path" into "build it from
+          # source", which fails. Credential-free: the cache is public, and
+          # nothing publishes here any more. Remove once Attic has the paths.
+          extra-nix-config: |
+            extra-substituters = https://logos-co.cachix.org
+            extra-trusted-public-keys = logos-co.cachix.org-1:12K8609ho1pCt0erUQrOrs/KmOuhWq/EhVwhzQRb35E=
 
       # libverifproxy is a ~25 minute source build of the whole nimbus/Nim
       # toolchain, so the Logos cache is doing real work here rather than
@@ -29,18 +43,32 @@ jobs:
         run: nix build -L
 
   test:
+    environment: ${{ (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main') && 'public-cache' || '' }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
+    # Same closure as `build` plus the suite, so it takes the same bound.
+    # test (ubuntu-latest) has never once completed: all six runs on record
+    # hung mid-fetch and died at GitHub's 6 hour ceiling.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
-      - uses: DeterminateSystems/nix-installer-action@main
-      - uses: cachix/cachix-action@v15
+      - name: Install Nix and set up the shared cache
+        uses: logos-co/setup-nix-cache-action@v1
         with:
-          name: logos-co
-          authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
+          attic-token-ci: ${{ secrets.ATTIC_TOKEN_CI }}
+          attic-token-public: ${{ secrets.ATTIC_TOKEN_PUBLIC }}
+          # Keep READING the old Cachix while the Attic caches fill up. The
+          # rust crate derivations this build needs are in Cachix and in no
+          # other cache -- so dropping it outright did not just cost cache
+          # hits, it turned "substitute a prebuilt path" into "build it from
+          # source", which fails. Credential-free: the cache is public, and
+          # nothing publishes here any more. Remove once Attic has the paths.
+          extra-nix-config: |
+            extra-substituters = https://logos-co.cachix.org
+            extra-trusted-public-keys = logos-co.cachix.org-1:12K8609ho1pCt0erUQrOrs/KmOuhWq/EhVwhzQRb35E=
 
       # The check derivation RUNS the suite as part of building it, so a red
       # test is a failed build. Named explicitly rather than via `nix flake
@@ -51,6 +79,8 @@ jobs:
 
   codegen:
     runs-on: ubuntu-latest
+    # A checkout and one python script; observed worst is 7 seconds.
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
