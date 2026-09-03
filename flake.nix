@@ -15,7 +15,7 @@
     # git+https, NOT github: — the github: scheme does not carry submodules
     # (NixOS/nix#14982) and nimbus' nix/default.nix asserts on `self.submodules`.
     # Needs Nix >= 2.27 for the flake-level `self = { submodules = true; }`.
-    nimbus-eth1.url = "git+https://github.com/status-im/nimbus-eth1?submodules=1&ref=refs/tags/v0.4.0";
+    nimbus-eth1.url = "git+https://github.com/status-im/nimbus-eth1?submodules=1&shallow=1&ref=refs/tags/v0.4.0";
   };
 
   outputs = inputs@{ self, logos-module-builder, logos-nix, nimbus-eth1 }:
