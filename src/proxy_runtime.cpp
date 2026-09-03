@@ -113,7 +113,11 @@ ProxyRuntime::~ProxyRuntime() {
     // Only the destructor ends the thread. Join UNCONDITIONALLY, never detach:
     // LogosModule::unload() unmaps the plugin image while the host keeps
     // running, so a detached thread would execute unmapped code.
-    m_shutdown = true;
+    //
+    // Under m_startMu, because threadMain reads it as a condvar predicate: a
+    // broadcast landing between its predicate test and its futex registration
+    // wakes nobody, and parks the thread for good.
+    { std::lock_guard<std::mutex> lk(m_startMu); m_shutdown = true; }
     m_startCv.notify_all();
     m_cv.notify_all();
     if (!m_thread.joinable()) return;
@@ -293,6 +297,15 @@ void ProxyRuntime::runOnce() {
 
     m_ctx = ::startVerifProxy(m_upstreamJson.data(), nullptr, nullptr);
 
+    // BEFORE releasing start(), not after. A caller handed `success` calls
+    // straight into call(), which refuses anything that is not yet Running, and
+    // ~ProxyRuntime skips stop() while m_runActive is still false — which
+    // strands the pump loop below with nobody left alive to end it.
+    if (m_ctx) {
+        m_runActive = true;
+        setState(State::Running);
+    }
+
     {
         std::lock_guard<std::mutex> lk(m_startMu);
         m_startDone = true;
@@ -321,9 +334,6 @@ void ProxyRuntime::runOnce() {
         m_startCv.notify_all();
         return;
     }
-    m_runActive = true;
-
-    setState(State::Running);
     if (m_emit)
         m_emit("proxyStarted",
                json{ { "success", true },
@@ -332,7 +342,10 @@ void ProxyRuntime::runOnce() {
     auto nextKeepAlive = steady_clock::now();
     for (;;) {
         drainCommands();
-        if (m_stopRequested.load(std::memory_order_acquire)) break;
+        // m_shutdown as well: a destructor that never reached stop() — because
+        // start() timed out, or the run was published late — must still be able
+        // to end this loop, and join() has nothing else to wait on.
+        if (m_stopRequested.load(std::memory_order_acquire) || m_shutdown.load()) break;
 
         if (m_inFlight.load() == 0 && keepAliveEnabled()
             && steady_clock::now() >= nextKeepAlive) {
@@ -367,7 +380,8 @@ void ProxyRuntime::runOnce() {
         // Idle: sleep on the condvar so an enqueue wakes us immediately.
         std::unique_lock<std::mutex> lk(m_mu);
         m_cv.wait_for(lk, milliseconds(m_cfg.pumpIntervalMs),
-                      [this] { return !m_queue.empty() || m_stopRequested.load(); });
+                      [this] { return !m_queue.empty() || m_stopRequested.load()
+                                      || m_shutdown.load(); });
     }
 
     teardown();

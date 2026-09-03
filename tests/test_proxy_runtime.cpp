@@ -84,6 +84,46 @@ LOGOS_TEST(runtime_start_and_stop_round_trip) {
     LOGOS_ASSERT_FALSE(rt.running());
 }
 
+LOGOS_TEST(runtime_start_publishes_the_run_before_it_returns) {
+    // Running and m_runActive used to be set AFTER start()'s latch was tripped,
+    // so the caller could be handed `success` and then told "proxy not running"
+    // by the very next call. Looped because it is a race, not a certainty: on
+    // ubuntu CI it fired often enough to hang the job twice running.
+    auto t = LogosTestContext("verified_proxy_module");
+    mockReset();
+
+    for (int i = 0; i < 500; ++i) {
+        ProxyRuntime rt(nullptr);
+        LOGOS_ASSERT_TRUE(rt.start(testConfig()).success);
+        LOGOS_ASSERT_TRUE(rt.running());
+        LOGOS_ASSERT_TRUE(rt.call("eth_blockNumber", json::array()).success);
+        LOGOS_ASSERT_TRUE(rt.stop().success);
+    }
+}
+
+LOGOS_TEST(runtime_destructor_ends_a_run_that_came_up_after_start_gave_up) {
+    // start() deliberately leaves a slow run going, so a caller that gives up
+    // and destroys the runtime never sets m_stopRequested. The pump loop has to
+    // answer to the destructor as well, or join() waits on a thread that has no
+    // reason left to return.
+    auto t = LogosTestContext("verified_proxy_module");
+    mockReset();
+    t.mockCFunction("startVerifProxy_delay_ms").returns(600);
+
+    ProxyConfig cfg = testConfig();
+    cfg.startTimeoutMs = 100;
+
+    const auto t0 = steady_clock::now();
+    {
+        ProxyRuntime rt(nullptr);
+        LOGOS_ASSERT_FALSE(rt.start(cfg).success);
+        // Destruct while startVerifProxy is still inside its prologue: the run
+        // is not published yet, so ~ProxyRuntime skips stop().
+        std::this_thread::sleep_for(milliseconds(150));
+    }
+    LOGOS_ASSERT_LT(duration_cast<milliseconds>(steady_clock::now() - t0).count(), 5000);
+}
+
 LOGOS_TEST(runtime_confines_every_c_call_to_one_non_caller_thread) {
     // The invariant that rots silently. setupForeignThreadGc /
     // tearDownForeignThreadGc are bound to startVerifProxy / stopVerifProxy, so
