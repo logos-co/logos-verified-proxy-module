@@ -11409,14 +11409,13 @@
         "narHash": "sha256-y3msabM1TJzj7gWHHBPUKBhwSWAzgosQksNec243Bgs=",
         "ref": "refs/tags/v0.4.0",
         "rev": "2ed512525a955d4f6c5f977eae4ea761b770d58a",
-        "shallow": true,
+        "revCount": 5503,
         "submodules": true,
         "type": "git",
         "url": "https://github.com/status-im/nimbus-eth1"
       },
       "original": {
         "ref": "refs/tags/v0.4.0",
-        "shallow": true,
         "submodules": true,
         "type": "git",
         "url": "https://github.com/status-im/nimbus-eth1"
