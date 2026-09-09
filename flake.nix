@@ -15,7 +15,10 @@
     # git+https, NOT github: — the github: scheme does not carry submodules
     # (NixOS/nix#14982) and nimbus' nix/default.nix asserts on `self.submodules`.
     # Needs Nix >= 2.27 for the flake-level `self = { submodules = true; }`.
-    nimbus-eth1.url = "git+https://github.com/status-im/nimbus-eth1?submodules=1&ref=refs/tags/v0.4.0";
+    # Pinned to a REV, not a tag: the encoding and fee fixes this module needs
+    # (upstream #4720, #4721, #4722, #4738) landed after v0.4.0 and there is no
+    # tag carrying them yet. Move back to a tag once one ships.
+    nimbus-eth1.url = "git+https://github.com/status-im/nimbus-eth1?submodules=1&rev=bd2cd354dd4729269a59da33e5278cf136fe7222";
   };
 
   outputs = inputs@{ self, logos-module-builder, logos-nix, nimbus-eth1 }:
