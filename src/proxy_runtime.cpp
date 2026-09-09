@@ -5,7 +5,6 @@
 #include <cstdio>
 #include <cstdlib>
 #include <ctime>
-#include <ios>
 #include <sstream>
 #include <utility>
 
@@ -653,17 +652,8 @@ void ProxyRuntime::noteHeadProbe(const CallSlot& slot) {
     bool wasJson = false;
     const json v = decodePayload(slot.result, wasJson);
 
-    // Upstream answers eth_blockNumber with a bare JSON NUMBER, not the hex
-    // string a JSON-RPC client would expect. Normalise to the documented
-    // "0x…" shape here so status() has one form.
-    std::string hex;
-    if (v.is_number_unsigned()) {
-        std::ostringstream o;
-        o << "0x" << std::hex << v.get<uint64_t>();
-        hex = o.str();
-    } else if (v.is_string()) {
-        hex = v.get<std::string>();
-    }
+    if (!v.is_string()) return;
+    const std::string hex = v.get<std::string>();
     if (hex.empty()) return;
 
     std::lock_guard<std::mutex> lk(m_errMu);

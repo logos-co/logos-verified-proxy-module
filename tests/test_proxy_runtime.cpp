@@ -450,7 +450,8 @@ LOGOS_TEST(runtime_head_probe_records_the_block_number) {
     // read and never assigned, so it stayed "" for the life of the process.
     auto t = LogosTestContext("verified_proxy_module");
     mockReset();
-    t.mockCFunction("proxyCall").returns("11572348");   // a bare JSON number
+    // The wire format the library actually emits: a hex QUANTITY string.
+    t.mockCFunction("proxyCall").returns("\"0xb0947c\"");
 
     ProxyConfig cfg = testConfig();
     cfg.keepAlive = "interval";
@@ -466,8 +467,6 @@ LOGOS_TEST(runtime_head_probe_records_the_block_number) {
     LOGOS_ASSERT_TRUE(got);
 
     LOGOS_ASSERT_GT(t.cFunctionCallCount("proxyCall:eth_blockNumber"), 0);
-    // Normalised to the "0x…" form status() documents, not the bare number
-    // upstream returns. 11572348 == 0xb0947c.
     LOGOS_ASSERT_EQ(s["head"]["blockNumber"].get<std::string>(), std::string("0xb0947c"));
     LOGOS_ASSERT_GT(s["head"]["updatedAt"].get<int64_t>(), 0);
 }
@@ -592,7 +591,7 @@ LOGOS_TEST(runtime_restart_does_not_inherit_the_previous_runs_head) {
     // switched network, and started again.
     auto t = LogosTestContext("verified_proxy_module");
     mockReset();
-    t.mockCFunction("proxyCall").returns("11572348");
+    t.mockCFunction("proxyCall").returns("\"0xb0947c\"");
 
     ProxyConfig cfg = testConfig();
     cfg.keepAlive = "interval";
