@@ -5,7 +5,6 @@
 #include <sys/socket.h>
 
 #include <cstdint>
-#include <cstdio>
 #include <cstring>
 #include <set>
 #include <string>
@@ -53,16 +52,6 @@ bool takesOptimisticStateFetch(const std::string& m) {
 /// methods keep returning exactly what the library produced — documented as
 /// such — so this translation cannot hide an upstream change from a caller who
 /// is talking to the module directly rather than over HTTP.
-json normalizeResult(json v) {
-    if (v.is_number_unsigned()) {
-        char buf[32];
-        std::snprintf(buf, sizeof(buf), "0x%llx",
-                      static_cast<unsigned long long>(v.get<uint64_t>()));
-        return json(buf);
-    }
-    return v;
-}
-
 json errorObject(int code, const std::string& message) {
     return json{ { "code", code }, { "message", message } };
 }
@@ -117,7 +106,7 @@ bool handleOne(const json& req, const RpcHttpServer::Dispatch& dispatch, json& o
         out = errorEnvelope(id, unknown ? -32601 : kServerError, r.error);
         return true;
     }
-    out = responseEnvelope(id, normalizeResult(r.value));
+    out = responseEnvelope(id, r.value);
     return true;
 }
 

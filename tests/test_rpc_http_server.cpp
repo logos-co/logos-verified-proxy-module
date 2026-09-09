@@ -96,16 +96,21 @@ LOGOS_TEST(http_leaves_other_methods_params_untouched) {
     LOGOS_ASSERT_EQ(r.seen[0].second.size(), static_cast<size_t>(2));
 }
 
-LOGOS_TEST(http_renders_a_bare_number_result_as_a_hex_quantity) {
-    // Upstream is not uniform: eth_chainId and eth_gasPrice answer hex strings,
-    // but eth_blockNumber answers a bare JSON number — which no client expects,
-    // since every QUANTITY in the spec is a hex string. Measured against
-    // sepolia, not assumed.
+LOGOS_TEST(http_passes_the_library_result_through_unchanged) {
+    // The server used to rewrite a bare top-level number into a hex quantity,
+    // because the library encoded QUANTITY types as JSON numbers. Upstream now
+    // encodes with the eth flavor, so there is nothing to repair — and
+    // repairing it anyway would hide a regression rather than surface it.
     Recorder r;
-    r.next = { true, json(11546453u), "" };
+    r.next = { true, json("0xb02f55"), "" };
     const json resp = call(R"({"jsonrpc":"2.0","id":1,"method":"eth_blockNumber"})", r);
-    LOGOS_ASSERT_TRUE(resp["result"].is_string());
     LOGOS_ASSERT_EQ(resp["result"].get<std::string>(), std::string("0xb02f55"));
+
+    // A number now reaches the client AS a number, which is what makes an
+    // upstream regression visible instead of silently papered over.
+    r.next = { true, json(11546453u), "" };
+    const json raw = call(R"({"jsonrpc":"2.0","id":1,"method":"eth_blockNumber"})", r);
+    LOGOS_ASSERT_TRUE(raw["result"].is_number());
 }
 
 LOGOS_TEST(http_leaves_strings_and_objects_alone) {
