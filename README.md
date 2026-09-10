@@ -275,17 +275,21 @@ nix run github:logos-co/logos-doctest -- run doctests/verified-proxy-runtime.tes
 ## Windows
 
 ```bash
-nix build .#packages.x86_64-windows.libverifproxy
+nix build .#packages.x86_64-windows.libverifproxy   # the static library
+nix build .#packages.x86_64-windows.default         # the module plugin
 ```
 
-Builds on an `x86_64-linux` builder and produces a `pe-x86-64` archive:
-`$out/lib/libverifproxy.a` with `startVerifProxy`, `stopVerifProxy`,
-`processVerifProxyTasks` and `proxyCall` defined, plus
-`$out/include/verifproxy.h`.
+Both build on an `x86_64-linux` builder. `libverifproxy` produces a `pe-x86-64`
+archive — `$out/lib/libverifproxy.a` with `startVerifProxy`, `stopVerifProxy`,
+`processVerifProxyTasks` and `proxyCall` defined — plus
+`$out/include/verifproxy.h`. `default` produces
+`$out/lib/verified_proxy_module_plugin.dll`, a `pei-x86-64` plugin, with its
+dependency DLLs staged beside it (Qt6Core, Qt6Network, Qt6RemoteObjects,
+libmicrohttpd-12, libcurl-4, libwinpthread-1, libstdc++-6 …).
 
-Two things had to be settled to get there, and neither is the cross toolchain
-— the mingw stdenv, the `ar` shim `--app:staticlib` needs, and the vendored
-nat-libs all work as written above.
+Four things had to be settled to get there, and none of them is the cross
+toolchain — the mingw stdenv, the `ar` shim `--app:staticlib` needs, and the
+vendored nat-libs all work as written above.
 
 **The compiler version.** `USE_SYSTEM_NIM=1` substitutes the nixpkgs Nim for
 the one nimbus-build-system pins, and nimbus-eth2's beacon-chain sources need
@@ -307,6 +311,32 @@ never produced. Its Linux branch takes `asm/x86-64.S` instead, so this is a
 toolchain assumption rather than anything about cross-compiling. Nimbus ships
 the pure-Nim bncurve backend for exactly this case, so the Windows build passes
 `-d:enable_mcl_lib=false`.
+
+**libmicrohttpd is `platforms.unix` upstream.** The library itself has real
+Windows support — the mingw build picks up Winsock and installs
+`libmicrohttpd-12.dll` — but its *optional* closure does not: gnutls pulls
+unbound → libevent, whose mingw build dies formatting an int64. `logos-nix`'s
+Windows cross-overlay widens the platform list and drops gnutls/curl/libgcrypt,
+which are optional to an embedded server (curl is the test client and `doCheck`
+is already false; HTTPS on a loopback JSON-RPC endpoint is not what terminates
+TLS). Because the *plugin's* package set comes from `logos-module-builder`'s
+`logos-nix`, not this repo's, that input has to carry the overlay too.
+
+**The endpoint's socket code was POSIX-only.** `rpc_http_server.cpp` filled a
+`sockaddr_in` through `<arpa/inet.h>`/`<netinet/in.h>`/`<sys/socket.h>`; on W32
+those are `<winsock2.h>` + `<ws2tcpip.h>` (`inet_pton` lives in the latter), and
+winsock2 must precede `microhttpd.h`. `windows.pthreads` also joins the build
+inputs on Windows — nixpkgs builds mingw-w64 against mcfgthread, so
+`-lwinpthread`, which `libverifproxy.a` needs and the plugin names, resolves
+nowhere by default.
+
+**Do not name `stdc++` on the Windows link line.** Upstream says `-lc++` for
+llvm-mingw, and the obvious translation is wrong: it puts `libstdc++.dll.a`
+ahead of `liblogos_protocol.a`, and the import library's definition of a COMDAT
+template body then collides with the archive's own —
+`multiple definition of 'std::__cxx11::basic_string<...>::_M_erase'`. g++ is the
+link driver for a CXX target and appends the C++ runtime last, which is the
+position that resolves. Same reason the macOS branch does not name `-lc++`.
 
 ## Development
 
