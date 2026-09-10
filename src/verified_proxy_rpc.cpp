@@ -14,7 +14,19 @@
 
 #include <nlohmann/json.hpp>
 
+#include <sstream>
+
 using json = nlohmann::json;
+
+namespace {
+// Upstream reads index/blockCount params with unpackArg(..., Quantity), which
+// takes a 0x-prefixed hex string and rejects a bare JSON number.
+std::string quantityHex(uint64_t v) {
+    std::ostringstream o;
+    o << "0x" << std::hex << v;
+    return o.str();
+}
+}  // namespace
 
 // BEGIN GENERATED RPC WRAPPERS -- edit tools/gen_rpc_methods.py, not this
 StdLogosResult VerifiedProxyImpl::ethChainId() {
@@ -66,11 +78,11 @@ StdLogosResult VerifiedProxyImpl::ethGetBlockTransactionCountByHash(const std::s
 }
 
 StdLogosResult VerifiedProxyImpl::ethGetTransactionByBlockNumberAndIndex(const std::string& blockTag, uint64_t index) {
-    return rpc("eth_getTransactionByBlockNumberAndIndex", json::array({blockTag, index}));
+    return rpc("eth_getTransactionByBlockNumberAndIndex", json::array({blockTag, quantityHex(index)}));
 }
 
 StdLogosResult VerifiedProxyImpl::ethGetTransactionByBlockHashAndIndex(const std::string& blockHash, uint64_t index) {
-    return rpc("eth_getTransactionByBlockHashAndIndex", json::array({blockHash, index}));
+    return rpc("eth_getTransactionByBlockHashAndIndex", json::array({blockHash, quantityHex(index)}));
 }
 
 StdLogosResult VerifiedProxyImpl::ethCall(const LogosMap& txArgs, const std::string& blockTag, bool optimisticStateFetch) {
@@ -130,7 +142,7 @@ StdLogosResult VerifiedProxyImpl::ethMaxPriorityFeePerGas() {
 }
 
 StdLogosResult VerifiedProxyImpl::ethFeeHistory(uint64_t blockCount, const std::string& newestBlock, const LogosList& rewardPercentiles) {
-    return rpc("eth_feeHistory", json::array({blockCount, newestBlock, rewardPercentiles}));
+    return rpc("eth_feeHistory", json::array({quantityHex(blockCount), newestBlock, rewardPercentiles}));
 }
 
 StdLogosResult VerifiedProxyImpl::ethSendRawTransaction(const std::string& txHexBytes) {
@@ -186,11 +198,11 @@ StdLogosResult VerifiedProxyImpl::opGetBlockTransactionCountByHash(const std::st
 }
 
 StdLogosResult VerifiedProxyImpl::opGetTransactionByBlockNumberAndIndex(const std::string& blockTag, uint64_t index) {
-    return rpc("op_getTransactionByBlockNumberAndIndex", json::array({blockTag, index}));
+    return rpc("op_getTransactionByBlockNumberAndIndex", json::array({blockTag, quantityHex(index)}));
 }
 
 StdLogosResult VerifiedProxyImpl::opGetTransactionByBlockHashAndIndex(const std::string& blockHash, uint64_t index) {
-    return rpc("op_getTransactionByBlockHashAndIndex", json::array({blockHash, index}));
+    return rpc("op_getTransactionByBlockHashAndIndex", json::array({blockHash, quantityHex(index)}));
 }
 
 StdLogosResult VerifiedProxyImpl::opCall(const LogosMap& txArgs, const std::string& blockTag, bool optimisticStateFetch) {
@@ -250,7 +262,7 @@ StdLogosResult VerifiedProxyImpl::opMaxPriorityFeePerGas() {
 }
 
 StdLogosResult VerifiedProxyImpl::opFeeHistory(uint64_t blockCount, const std::string& newestBlock, const LogosList& rewardPercentiles) {
-    return rpc("op_feeHistory", json::array({blockCount, newestBlock, rewardPercentiles}));
+    return rpc("op_feeHistory", json::array({quantityHex(blockCount), newestBlock, rewardPercentiles}));
 }
 
 StdLogosResult VerifiedProxyImpl::opSendRawTransaction(const std::string& txHexBytes) {
