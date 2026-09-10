@@ -123,6 +123,13 @@
               # install Nim's SIGINT/SIGSEGV/SIGABRT handlers over the HOST's.
               + " -d:noSignalHandler"
               + " -d:release --debugger:off -d:disableLTO"
+              # nim-mcl's Windows branch is written for llvm-mingw: it feeds
+              # src/base64.ll (LLVM IR) to $CC, and GCC answers "linker input
+              # file unused because linking not done", leaving `ar` to fail on
+              # the .o that was never produced. Nothing to do with the cross
+              # setup -- its Linux branch takes asm/x86-64.S instead. nimbus
+              # ships the pure-Nim bncurve backend for exactly this.
+              + lib.optionalString isWin " -d:enable_mcl_lib=false"
               # Nim only adds -fPIC when optGenDynLib is set, and --app:staticlib
               # does not set it. The archive is linked into a SHARED plugin.
               # Meaningless on PE.

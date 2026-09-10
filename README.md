@@ -272,45 +272,41 @@ which is why it is a separate workflow from CI.
 nix run github:logos-co/logos-doctest -- run doctests/verified-proxy-runtime.test.yaml --verbose
 ```
 
-## Windows: blocked on the Nim version, not on the cross toolchain
+## Windows
 
-`nix build .#packages.x86_64-windows.libverifproxy` gets a long way and then
-fails in the same place every time:
-
-```
-vendor/nimbus-eth2/beacon_chain/spec/state_transition_block.nim(1018, 32)
-Error: invalid type: 'typeof(SomeBeaconBlockBody)' in this context
-[using system Nim: …/x86_64-w64-mingw32-nim-wrapped-2.2.4]
+```bash
+nix build .#packages.x86_64-windows.libverifproxy
 ```
 
-Everything that was expected to be hard already works: the mingw cross stdenv,
-the `ar` shim that `--app:staticlib` needs, the vendored nat-libs (which branch
-on `$(OS)` and silently take the POSIX path under cross), and Nim itself
-compiling most of the tree.
+Builds on an `x86_64-linux` builder and produces a `pe-x86-64` archive:
+`$out/lib/libverifproxy.a` with `startVerifProxy`, `stopVerifProxy`,
+`processVerifProxyTasks` and `proxyCall` defined, plus
+`$out/include/verifproxy.h`.
 
-The blocker is a **compiler version**. `USE_SYSTEM_NIM=1` substitutes the
-nixpkgs Nim for the one nimbus-build-system pins, and the `nixpkgs-windows` pin
-inside `logos-nix` carries **2.2.4** for every spelling — `nim`, `nim-2_2` and
-`nim-unwrapped-2_2` alike — while nimbus-eth2's beacon-chain sources need
-**2.2.10**, which is what the native build gets and compiles cleanly with.
+Two things had to be settled to get there, and neither is the cross toolchain
+— the mingw stdenv, the `ar` shim `--app:staticlib` needs, and the vendored
+nat-libs all work as written above.
 
-Three things that do NOT fix it, checked so the next person does not repeat them:
+**The compiler version.** `USE_SYSTEM_NIM=1` substitutes the nixpkgs Nim for
+the one nimbus-build-system pins, and nimbus-eth2's beacon-chain sources need
+2.2.10 — on 2.2.4 the tree stops at `state_transition_block.nim` with
+`invalid type: 'typeof(SomeBeaconBlockBody)'`. Fixed in `logos-nix`, which
+overlays Nim 2.2.10 into `mkWindowsPkgs` (`nix/windows/nim-overlay.nix`). It
+could not be fixed here: in a cross set the build-side compiler is a *wrapper*
+carrying the mingw toolchain configuration, a plain `nixpkgs#nim` knows nothing
+about the target, and `wrapNim` is reachable only as
+`nim-2_2.passthru.wrapNim`, so the wrapper cannot be rebuilt from an overridden
+compiler outside the package set. Dropping `USE_SYSTEM_NIM=1` instead is no
+help either: nimbus-build-system then fetches Nim over the network, which the
+sandbox forbids.
 
-- Passing a Nim from another nixpkgs. The build-side compiler in a cross set is
-  a *wrapper* (`x86_64-w64-mingw32-nim-wrapper`) that carries the mingw
-  toolchain configuration; a plain `nixpkgs#nim` is a native compiler that knows
-  nothing about the target.
-- Dropping `USE_SYSTEM_NIM=1` so nimbus-build-system builds its own pinned
-  2.2.10. It fetches Nim over the network, which the Nix sandbox forbids —
-  which is exactly why upstream's own nix build sets the flag.
-- Overriding `nim-unwrapped-2_2` from this flake. `wrapNim` is not exposed, so
-  the wrapper cannot be rebuilt from an overridden compiler without an overlay
-  applied where the package set is constructed.
-
-The fix belongs in `logos-nix`: bump `nixpkgs-windows` far enough to carry Nim
-2.2.10, or apply an overlay inside `mkWindowsPkgs`. Doing it here by importing a
-second nixpkgs would put two builds of `libstdc++-6.dll` in one directory, which
-resolves by filename and would be a worse problem than the one it solves.
+**mcl assumes llvm-mingw.** `vendor/nim-mcl`'s `when defined(windows)` branch
+feeds `src/base64.ll` — LLVM IR — to `$CC`. GCC answers `linker input file
+unused because linking not done`, and `ar` then fails on the `.o` that was
+never produced. Its Linux branch takes `asm/x86-64.S` instead, so this is a
+toolchain assumption rather than anything about cross-compiling. Nimbus ships
+the pure-Nim bncurve backend for exactly this case, so the Windows build passes
+`-d:enable_mcl_lib=false`.
 
 ## Development
 
