@@ -1,0 +1,39 @@
+name: Windows
+
+# The entire per-repo cost of Windows CI. The Nix install and cache, the
+# target-existence guard, the cold-cache refusal, the PE-format gate, the
+# artifact hand-off and its round-trip check all live once in
+# logos-co/logos-windows-ci.
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+
+jobs:
+  windows:
+    uses: logos-co/logos-windows-ci/.github/workflows/windows-ci.yml@v1
+    secrets: inherit
+    with:
+      # libverifproxy ONLY. The module itself does not cross yet: its
+      # metadata.json asks for libmicrohttpd, whose meta.platforms has no mingw
+      # entry, so `packages.x86_64-windows.default` refuses to evaluate. Adding
+      # it here would gate on a failure this repo already knows about.
+      targets: libverifproxy
+      # Headers and one static archive -- no .exe and no .dll -- so the default
+      # floor of one loose PE would refuse a perfectly good tree. Measured
+      # against a real staged tree on the Linux builder, not guessed.
+      min-pes: 0
+      min-archives: 1
+      # NO SMOKE, and that is a coverage gap rather than a pass. A static
+      # library has no entry point; nothing here can be executed on the Windows
+      # runner. Anything stronger needs a consumer to link against it, which
+      # belongs in that consumer's job -- and cannot be this repo's own module
+      # until the libmicrohttpd gap above is closed.
+      #
+      # What the archive gate below buys instead is that the library target
+      # actually emitted its entry points. That is the failure mode with
+      # history here: upstream's installPhase collects only `-type f
+      # -executable`, which for a .a and a .h yields an empty $out.
+      extra-gates: bash .github/gates/verifproxy-archive.sh
