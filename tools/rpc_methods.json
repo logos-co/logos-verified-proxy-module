@@ -82,14 +82,14 @@
   "rpc": "eth_getTransactionByBlockNumberAndIndex",
   "params": [
    "str",
-   "u64"
+   "qty"
   ]
  },
  {
   "rpc": "eth_getTransactionByBlockHashAndIndex",
   "params": [
    "str",
-   "u64"
+   "qty"
   ]
  },
  {
@@ -179,7 +179,7 @@
  {
   "rpc": "eth_feeHistory",
   "params": [
-   "u64",
+   "qty",
    "str",
    "json"
   ]
@@ -269,14 +269,14 @@
   "rpc": "op_getTransactionByBlockNumberAndIndex",
   "params": [
    "str",
-   "u64"
+   "qty"
   ]
  },
  {
   "rpc": "op_getTransactionByBlockHashAndIndex",
   "params": [
    "str",
-   "u64"
+   "qty"
   ]
  },
  {
@@ -366,7 +366,7 @@
  {
   "rpc": "op_feeHistory",
   "params": [
-   "u64",
+   "qty",
    "str",
    "json"
   ]

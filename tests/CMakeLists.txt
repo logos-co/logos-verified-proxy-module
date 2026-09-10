@@ -30,6 +30,7 @@ logos_test(
         test_config_validation.cpp
         test_proxy_runtime.cpp
         test_rpc_http_server.cpp
+        test_rpc_encoding.cpp
         test_beacon_client.cpp
         verified_proxy_events_test.cpp
     MOCK_C_SOURCES

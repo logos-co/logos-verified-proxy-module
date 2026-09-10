@@ -44,6 +44,7 @@ MockCtx g_ctx;
 std::mutex g_obsMu;
 std::unordered_map<std::string, std::thread::id> g_threadOf;
 std::vector<std::string> g_order;
+std::unordered_map<std::string, std::string> g_params;
 
 void observe(const char* fn) {
     std::lock_guard<std::mutex> lk(g_obsMu);
@@ -87,10 +88,17 @@ void mockReset() {
         std::lock_guard<std::mutex> lk(g_obsMu);
         g_threadOf.clear();
         g_order.clear();
+        g_params.clear();
     }
     std::lock_guard<std::mutex> lk(g_ctx.mu);
     g_ctx.completions.clear();
     g_ctx.stop = false;
+}
+
+std::string mockParamsOf(const std::string& method) {
+    std::lock_guard<std::mutex> lk(g_obsMu);
+    const auto it = g_params.find(method);
+    return it == g_params.end() ? std::string() : it->second;
 }
 
 size_t mockPendingCompletions() {
@@ -142,11 +150,16 @@ extern "C" int processVerifProxyTasks(Context*) {
     return RET_SUCCESS;
 }
 
-extern "C" void proxyCall(Context* c, char* name, char* /*params*/,
+extern "C" void proxyCall(Context* c, char* name, char* params,
                           CallBackProc cb, void* ud) {
     // Record the method name too, so tests can assert WHICH RPC was issued
-    // (the heartbeat in particular).
+    // (the heartbeat in particular), and the params so they can assert HOW an
+    // argument was encoded — upstream reads some of them as typed quantities.
     LOGOS_CMOCK_RECORD(std::string("proxyCall:") + (name ? name : ""));
+    {
+        std::lock_guard<std::mutex> lk(g_obsMu);
+        g_params[name ? name : ""] = params ? params : "";
+    }
     enqueueCompletion("proxyCall", c, cb, ud);
 }
 

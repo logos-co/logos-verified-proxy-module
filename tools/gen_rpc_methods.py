@@ -64,8 +64,13 @@ JSON_LISTS = {("feeHistory", 2)}
 CPP_TYPE = {
     "str": "const std::string& ",
     "bool": "bool ",
-    "u64": "uint64_t ",
+    "qty": "uint64_t ",
 }
+
+# A "qty" stays a uint64_t in the signature but crosses the FFI as a hex
+# QUANTITY string: upstream reads these with unpackArg(..., Quantity), which
+# rejects a bare JSON number.
+ARG_WRAP = {"qty": "quantityHex({})"}
 
 # Methods this module drives itself; a typed wrapper would invite callers to
 # fight the runtime for control of them.
@@ -81,14 +86,16 @@ def extract(path):
         seg = block.split('\n  of "')[0]
         kinds = []
         for m in re.finditer(
-            r"parsedParams\[(\d+)\]\.(getStr|getBool|getBiggestInt)\(\)"
+            r"parsedParams\[(\d+)\]\.(getStr|getBool)\(\)"
+            r"|getQuantity\(parsedParams\[(\d+)\]\)"
             r"|\(\$parsedParams\[(\d+)\]\)", seg):
             if m.group(2):
                 kinds.append((int(m.group(1)),
-                              {"getStr": "str", "getBool": "bool",
-                               "getBiggestInt": "u64"}[m.group(2)]))
+                              {"getStr": "str", "getBool": "bool"}[m.group(2)]))
+            elif m.group(3):
+                kinds.append((int(m.group(3)), "qty"))
             else:
-                kinds.append((int(m.group(3)), "json"))
+                kinds.append((int(m.group(4)), "json"))
         out.append({"rpc": name, "params": [k for _, k in sorted(set(kinds))]})
     return out
 
@@ -146,7 +153,9 @@ def emit_impl(table):
         names = PARAM_NAMES.get(base, [f"arg{i}" for i in range(len(params))])
         sig = signature(e["rpc"], params).replace(
             "StdLogosResult ", "StdLogosResult VerifiedProxyImpl::", 1)
-        args = ", ".join(names)
+        args = ", ".join(
+            ARG_WRAP.get(kind, "{}").format(name)
+            for kind, name in zip(params, names))
         out.append(f"{sig} {{")
         out.append(f'    return rpc("{e["rpc"]}", json::array({{{args}}}));')
         out.append("}")

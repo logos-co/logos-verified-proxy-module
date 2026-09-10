@@ -16,6 +16,9 @@ void mockReset();
 /// Completions queued but not yet drained by processVerifProxyTasks.
 size_t mockPendingCompletions();
 
+/// The params JSON handed to the last proxyCall for `method`, verbatim.
+std::string mockParamsOf(const std::string& method);
+
 /// Status sentinel meaning "this call never completes" — used to test the
 /// timeout path and the joint-ownership CallBox under ASan.
 constexpr int mockNeverCompletes() { return 0xDEAD; }
