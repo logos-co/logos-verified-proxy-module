@@ -1,8 +1,16 @@
 #include "rpc_http_server.h"
 
+#ifdef _WIN32
+// winsock2.h MUST precede microhttpd.h on W32 -- MHD's header pulls windows.h
+// otherwise, and the two disagree about the socket types. inet_pton lives in
+// ws2tcpip.h, not winsock2.h.
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#else
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
+#endif
 
 #include <cstdint>
 #include <cstring>

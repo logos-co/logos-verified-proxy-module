@@ -27,6 +27,12 @@
         "curl"
       ]
     },
+    "platforms": [
+      {
+        "when": { "os": "windows" },
+        "packages": { "runtime": [ "windows.pthreads" ] }
+      }
+    ],
     "external_libraries": [
       {
         "name": "verifproxy"

@@ -72,11 +72,17 @@ if(APPLE)
     target_link_libraries(verified_proxy_module_module_plugin PRIVATE
         "-framework Security")
 elseif(WIN32)
-    # Upstream says -lc++ because their dist build uses llvm-mingw; logos-nix's
-    # cross is gcc-mingw, so it is libstdc++ here. A static Nim archive records
-    # no imports, so the plugin must name the Win32 set itself.
+    # A static Nim archive records no imports, so the plugin must name the Win32
+    # set itself. Upstream additionally says -lc++, for llvm-mingw; do NOT
+    # translate that to an explicit `stdc++` here. Naming it puts
+    # libstdc++.dll.a ahead of liblogos_protocol.a, and the import library's
+    # definition of a COMDAT template body then collides with the archive's own:
+    #   multiple definition of `std::__cxx11::basic_string<...>::_M_erase'
+    # g++ is the link driver for a CXX target and appends the C++ runtime last,
+    # which is the position that actually resolves -- same reason the APPLE
+    # branch above does not name -lc++.
     target_link_libraries(verified_proxy_module_module_plugin PRIVATE
-        stdc++ ws2_32 bcrypt iphlpapi userenv ntdll dbghelp winpthread)
+        ws2_32 bcrypt iphlpapi userenv ntdll dbghelp winpthread)
 else()
     target_link_libraries(verified_proxy_module_module_plugin PRIVATE stdc++ m)
     # Do not re-export anything the archive carries (bearssl, secp256k1, blst,
