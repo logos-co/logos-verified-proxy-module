@@ -74,9 +74,13 @@ impossible without it. (Infura notably does not.)
 Events: `proxyStarted`, `proxyStopped`, `proxyStateChanged`.
 
 All RPC methods are **synchronous** — they return the verified result, or an
-error, within `callTimeoutMs`. Consumers that want concurrency use the generated
-`<method>Async` twin on their side; the module is `concurrency: "multi"`, so
-blocked callers do not stall each other.
+error, within `queueTimeoutMs + callTimeoutMs`. Capacity waits in a FIFO queue;
+`callTimeoutMs` starts only after admission. Consumers that want concurrency use
+the generated `<method>Async` twin on their side; the module is
+`concurrency: "multi"`, so blocked callers do not stall each other. Its generated
+host glue uses four reusable workers (`max_workers: 4`); additional calls queue
+instead of creating an unbounded number of Qt threads and event-dispatcher
+pipes.
 
 ### `rpc()` and `optimisticStateFetch`
 
@@ -101,7 +105,9 @@ Off by default — a module should not open a listening socket unless asked:
 
 `localEndpoint()` returns the URL (or `""`), and `status().httpServer` reports
 it. Every request is forwarded through the **same** verified `proxyCall` path
-the typed methods use — one verification path, one error shape.
+the typed methods use — one verification path, one error shape. The listener's
+connection count is capped at the runtime's effective in-flight limit, so its
+thread-per-connection mode cannot consume descriptors without bound.
 
 ```bash
 curl -s -X POST -H 'content-type: application/json'   --data '{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}'   http://127.0.0.1:8545
@@ -140,11 +146,33 @@ Required: `trustedBlockRoot` (`0x` + 64 hex), `executionApiUrls`,
 is enabled by setting `opExecutionApiUrls` (there is no `op-*` network name in
 the library's JSON config — that is a CLI-only option on the standalone binary).
 
-Module-side knobs: `callTimeoutMs` (30000), `startTimeoutMs` (120000),
-`drainTimeoutMs` (2000 — a polling bound, see below), `pumpIntervalMs` (50),
-`maxInFlight` (64), `httpServer` (see above),
+Module-side knobs: `callTimeoutMs` (30000), `queueTimeoutMs` (30000),
+`startTimeoutMs` (120000), `drainTimeoutMs` (2000 — a polling bound, see below),
+`pumpIntervalMs` (50), `maxInFlight` (64), `httpServer` (see above),
 `keepAlive` (`off` | `interval` | `continuous`), `keepAliveIntervalMs` (1000),
 `autoStart` (false). Upstream tuning lives under `tuning`.
+
+`maxInFlight` is an operator ceiling, not a promise that 64 calls can run at
+once. Calls above the active ceiling wait in FIFO order for up to
+`queueTimeoutMs`; their separate `callTimeoutMs` begins only when they are
+admitted. On macOS and Linux the runtime reads the process' live
+`RLIMIT_NOFILE`, counts descriptors already used by the host, reserves 25%
+(between 16 and 128 descriptors) for Qt, logs, DNS/TLS and lifecycle work, and
+derives a lower effective ceiling when necessary. Each admission rechecks the
+live count because Nimbus/Chronos may open a fresh HTTP connection for a call
+and one verified call can fan out to `tuning.parallelBlockDownloads` requests.
+Windows retains the configured ceiling because it has no equivalent
+per-process socket limit to query.
+
+The current calculation and queue depth are visible under `status().resources`, including
+`openDescriptors`, `softDescriptorLimit`, `descriptorReserve`,
+`estimatedDescriptorsPerCall`, `effectiveMaxInFlight`, `queuedCalls` and
+`queueTimeoutMs`. A call is rejected only when its queue deadline expires (or
+the proxy stops), with the last blocker included in the error. Descriptor-caused
+expiries retain the actionable `OS file-descriptor budget is exhausted` detail;
+they do not take the module process down. Internal heartbeat/head probes never
+wait and yield to queued user calls, because they run on the thread that frees
+capacity.
 
 Config is persisted to the host-provided per-instance directory and reloaded on
 load. `VERIFIED_PROXY_MODULE_CONFIG` (inline JSON or a path) supplies a
@@ -210,8 +238,9 @@ Two consequences worth knowing:
   between pump calls, so `stop()` — and the destructor join — can overshoot it
   by up to one pump duration. Measured `stop()` in that run: 1102 ms.
 * Every wait in `ProxyRuntime` is bounded and every expiry names itself:
-  `start()`, `stop()` and `call()` return an error carrying the operation, the
-  waiting and proxy thread ids and the runtime's state, and the destructor
+  admission, `start()`, `stop()` and `call()` return an error carrying the
+  limiting operation or resource (with thread/runtime state on lifecycle and
+  dispatched-call timeouts), and the destructor
   aborts with the same report if the proxy thread has not left `threadMain`
   30 s after shutdown was requested. `join()` takes no deadline, so without
   that a wedged proxy thread hangs its caller — a host, or a CI job — with no
@@ -219,7 +248,8 @@ Two consequences worth knowing:
 
 Verified reads have a much fatter latency tail than a plain RPC call: the worst
 single `eth_blockNumber` in that run took **12.6 s**, against a 30 s default
-`callTimeoutMs`. Budget accordingly.
+`callTimeoutMs`. A saturated caller can first spend up to the separate 30 s
+`queueTimeoutMs`; budget the combined deadline accordingly.
 
 ## Known limitations
 

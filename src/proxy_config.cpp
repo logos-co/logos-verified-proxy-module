@@ -282,6 +282,7 @@ bool ProxyConfig::fromJson(const json& in, ProxyConfig& out, std::string& err) {
 
     // --- module knobs --------------------------------------------------------
     if (!readInt(in, "callTimeoutMs",       out.callTimeoutMs,       err)) return false;
+    if (!readInt(in, "queueTimeoutMs",      out.queueTimeoutMs,      err)) return false;
     if (!readInt(in, "startTimeoutMs",      out.startTimeoutMs,      err)) return false;
     if (!readInt(in, "drainTimeoutMs",      out.drainTimeoutMs,      err)) return false;
     if (!readInt(in, "pumpIntervalMs",      out.pumpIntervalMs,      err)) return false;
@@ -304,6 +305,7 @@ bool ProxyConfig::fromJson(const json& in, ProxyConfig& out, std::string& err) {
     }
 
     if (out.callTimeoutMs <= 0)  { err = "'callTimeoutMs' must be positive";  return false; }
+    if (out.queueTimeoutMs <= 0) { err = "'queueTimeoutMs' must be positive"; return false; }
     if (out.startTimeoutMs <= 0) { err = "'startTimeoutMs' must be positive"; return false; }
     if (out.maxInFlight <= 0)    { err = "'maxInFlight' must be positive";    return false; }
     if (out.pumpIntervalMs <= 0) { err = "'pumpIntervalMs' must be positive"; return false; }
@@ -369,6 +371,7 @@ json ProxyConfig::asJson(bool redactUrls) const {
         { "freezeAtSlot", freezeAtSlot },
     };
     j["callTimeoutMs"]       = callTimeoutMs;
+    j["queueTimeoutMs"]      = queueTimeoutMs;
     j["startTimeoutMs"]      = startTimeoutMs;
     j["drainTimeoutMs"]      = drainTimeoutMs;
     j["pumpIntervalMs"]      = pumpIntervalMs;

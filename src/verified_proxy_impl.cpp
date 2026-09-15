@@ -1,8 +1,10 @@
 #include "verified_proxy_impl.h"
 
+#include <algorithm>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <sstream>
 #include <system_error>
 
@@ -184,8 +186,12 @@ StdLogosResult VerifiedProxyImpl::start() {
         });
 
     std::string httpErr;
+    const auto httpConnectionLimit = static_cast<uint32_t>(std::min<int64_t>(
+        m_rt->effectiveMaxInFlight(), std::numeric_limits<uint32_t>::max()));
     if (!m_http->start(m_cfg->httpHost,
-                       static_cast<uint16_t>(m_cfg->httpPort), httpErr)) {
+                       static_cast<uint16_t>(m_cfg->httpPort),
+                       httpConnectionLimit,
+                       httpErr)) {
         // Fail the whole start rather than leave a half-started module: a
         // caller that asked for an endpoint and silently did not get one would
         // point a wallet at a dead port.

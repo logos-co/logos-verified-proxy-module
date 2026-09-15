@@ -23,9 +23,11 @@ class RpcHttpServer;
 /// Lifecycle: configure() -> start() -> call methods -> stop().
 ///
 /// All RPC methods are SYNCHRONOUS: they return the verified result, or an
-/// error, within `callTimeoutMs`. Consumers that want concurrency use the
-/// generated `<method>Async` twin on their side; this module is
-/// `concurrency: "multi"`, so blocked callers do not stall each other.
+/// error, within `queueTimeoutMs + callTimeoutMs`. The first deadline bounds
+/// the FIFO wait for capacity; the second starts after dispatch. Consumers
+/// that want concurrency use the generated `<method>Async` twin on their side;
+/// this module is `concurrency: "multi"`, so blocked callers do not stall each
+/// other.
 class VerifiedProxyImpl : public LogosModuleContext {
 public:
     VerifiedProxyImpl();
@@ -53,7 +55,8 @@ public:
     ///   "opExecutionApiUrls": [], "privateTxUrls": [], "archiveUrls": [],
     ///   "logLevel": "INFO", "logFormat": "Json",
     ///   "tuning": { "maxBlockWalk": 1000, "headerStoreLen": 256 },
-    ///   "callTimeoutMs": 30000, "startTimeoutMs": 120000,
+    ///   "callTimeoutMs": 30000, "queueTimeoutMs": 30000,
+    ///   "startTimeoutMs": 120000,
     ///   "keepAlive": "interval", "keepAliveIntervalMs": 1000,   // do not use "off"
     ///   "httpServer": { "enabled": false, "host": "127.0.0.1", "port": 8545 },
     ///   "maxInFlight": 64, "autoStart": false
@@ -128,8 +131,17 @@ public:
     ///   "startedAt": number, "uptimeSeconds": number,
     ///   "head": { "blockNumber": string, "updatedAt": number },
     ///   "counters": { "callsTotal": number, "callsFailed": number,
-    ///                 "callsInFlight": number, "leakedCalls": number,
-    ///                 "heartbeatFailures": number },
+    ///                 "callsInFlight": number, "callsAdmitted": number,
+    ///                 "leakedCalls": number, "heartbeatFailures": number,
+    ///                 "resourceRejections": number,
+    ///                 "callsQueued": number, "queueTimeouts": number },
+    ///   "resources": { "openDescriptors": number,
+    ///                  "softDescriptorLimit": number,
+    ///                  "descriptorReserve": number,
+    ///                  "estimatedDescriptorsPerCall": number,
+    ///                  "configuredMaxInFlight": number,
+    ///                  "effectiveMaxInFlight": number,
+    ///                  "queuedCalls": number, "queueTimeoutMs": number },
     ///   "lastError": string
     /// }
     /// @endcode

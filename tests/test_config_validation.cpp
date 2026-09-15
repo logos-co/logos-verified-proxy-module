@@ -133,6 +133,7 @@ LOGOS_TEST(config_accepts_upstreams_own_comma_separated_spelling) {
 LOGOS_TEST(config_rejects_nonsensical_module_knobs) {
     std::string err;
     LOGOS_ASSERT_FALSE(accepts(withField("callTimeoutMs", 0), err));
+    LOGOS_ASSERT_FALSE(accepts(withField("queueTimeoutMs", 0), err));
     LOGOS_ASSERT_FALSE(accepts(withField("startTimeoutMs", -1), err));
     LOGOS_ASSERT_FALSE(accepts(withField("maxInFlight", 0), err));
     LOGOS_ASSERT_FALSE(accepts(withField("keepAlive", "sometimes"), err));
@@ -156,6 +157,7 @@ LOGOS_TEST(config_translates_url_arrays_to_upstreams_comma_separated_strings) {
     LOGOS_ASSERT_EQ(up["eth2Network"].get<std::string>(), std::string("sepolia"));
     // Module-only knobs must NOT leak into the library's config.
     LOGOS_ASSERT_FALSE(up.contains("callTimeoutMs"));
+    LOGOS_ASSERT_FALSE(up.contains("queueTimeoutMs"));
     LOGOS_ASSERT_FALSE(up.contains("keepAlive"));
     LOGOS_ASSERT_FALSE(up.contains("tuning"));
 }
@@ -344,6 +346,7 @@ LOGOS_TEST(raw_config_round_trips_through_configure) {
     // otherwise "restore the last config" hands back a form that cannot start.
     json c = baseConfig();
     c["network"] = "sepolia";
+    c["queueTimeoutMs"] = 4321;
     ProxyConfig first;
     std::string err;
     LOGOS_ASSERT_TRUE(ProxyConfig::fromJson(c, first, err));
@@ -355,6 +358,7 @@ LOGOS_TEST(raw_config_round_trips_through_configure) {
     LOGOS_ASSERT_EQ(second.trustedBlockRoot, first.trustedBlockRoot);
     LOGOS_ASSERT_TRUE(second.beaconApiUrls == first.beaconApiUrls);
     LOGOS_ASSERT_TRUE(second.executionApiUrls == first.executionApiUrls);
+    LOGOS_ASSERT_EQ(second.queueTimeoutMs, static_cast<int64_t>(4321));
     LOGOS_ASSERT_EQ(second.keepAlive, first.keepAlive);
     LOGOS_ASSERT_EQ(second.httpEnabled, first.httpEnabled);
     LOGOS_ASSERT_EQ(second.httpPort, first.httpPort);

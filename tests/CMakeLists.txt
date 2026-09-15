@@ -21,6 +21,7 @@ logos_test(
     MODULE_SOURCES
         ../src/proxy_config.cpp
         ../src/proxy_runtime.cpp
+        ../src/resource_budget.cpp
         ../src/verified_proxy_impl.cpp
         ../src/verified_proxy_rpc.cpp
         ../src/rpc_http_server.cpp
@@ -29,6 +30,7 @@ logos_test(
         main.cpp
         test_config_validation.cpp
         test_proxy_runtime.cpp
+        test_resource_budget.cpp
         test_rpc_http_server.cpp
         test_rpc_encoding.cpp
         test_beacon_client.cpp
@@ -40,5 +42,8 @@ logos_test(
         .
 )
 target_link_libraries(verified_proxy_module_tests PRIVATE PkgConfig::MHD PkgConfig::CURL)
+if(APPLE)
+    target_link_libraries(verified_proxy_module_tests PRIVATE proc)
+endif()
 target_compile_definitions(verified_proxy_module_tests PRIVATE
     VERIFIED_PROXY_MODULE_VERSION="${VERIFIED_PROXY_MODULE_VERSION}")
