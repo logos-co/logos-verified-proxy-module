@@ -15,6 +15,7 @@
 #include <logos_result.h>
 
 #include "proxy_config.h"
+#include "resource_budget.h"
 
 struct Context;  // opaque, from verifproxy.h
 
@@ -51,8 +52,10 @@ public:
     /// `emit` is called with (eventName, jsonPayload). Safe from any thread —
     /// the host marshals it.
     using EmitFn = std::function<void(const std::string&, const std::string&)>;
+    using DescriptorQuery = std::function<DescriptorSnapshot()>;
 
-    explicit ProxyRuntime(EmitFn emit);
+    explicit ProxyRuntime(EmitFn emit,
+                          DescriptorQuery descriptorQuery = currentProcessDescriptorSnapshot);
     ~ProxyRuntime();
 
     ProxyRuntime(const ProxyRuntime&) = delete;
@@ -83,6 +86,11 @@ public:
     /// `params` must be a JSON ARRAY (upstream does `parseJson(params).getElems`).
     StdLogosResult call(const std::string& method, const nlohmann::json& params);
 
+    /// The configured call ceiling after applying the process' descriptor
+    /// limit. Used by the optional HTTP listener to bound its own connection
+    /// threads at the same resource boundary.
+    int64_t effectiveMaxInFlight() const { return m_effectiveMaxInFlight.load(); }
+
     nlohmann::json statusSnapshot() const;
 
     /// How long `processVerifProxyTasks` actually blocks.
@@ -100,6 +108,7 @@ public:
 
 private:
     enum class State { Idle, Starting, Running, Degraded, Draining, Stopped, Failed };
+    enum class AdmissionBlock { None, Concurrency, Descriptors };
     static const char* stateName(State s);
 
     void threadMain();
@@ -124,6 +133,11 @@ private:
     void noteHeadProbe(const CallSlot& slot);
     void noteFinished(uint64_t id, bool ok);
     void recordPump(int64_t ms, bool busy);
+    AdmissionBlock admissionBlockLocked(std::string& error);
+    bool waitForAdmission(std::string& error);
+    bool tryAdmit(std::string& error);
+    void releaseAdmission();
+    bool removeAdmissionTicketLocked(uint64_t ticket);
 
     // ── owned by the proxy thread ────────────────────────────────────────
     Context* m_ctx = nullptr;
@@ -137,6 +151,16 @@ private:
     std::deque<std::function<void(Context*)>> m_queue;
     std::atomic<uint64_t> m_nextId{1};
     std::atomic<int64_t>  m_inFlight{0};
+    // Reserved before a command is queued, unlike m_inFlight (which rises on
+    // the proxy thread). This closes the check-then-enqueue race when many
+    // multi-dispatch workers arrive together.
+    std::atomic<int64_t>  m_admitted{0};
+    std::atomic<int64_t>  m_effectiveMaxInFlight{64};
+    std::atomic<int64_t>  m_descriptorsPerCall{12};
+    std::atomic<int64_t>  m_resourceRejections{0};
+    std::atomic<int64_t>  m_callsQueued{0};
+    std::atomic<int64_t>  m_queueTimeouts{0};
+    std::atomic<int64_t>  m_queuedNow{0};
     std::atomic<int64_t>  m_leaked{0};
     std::atomic<int64_t>  m_callsTotal{0};
     std::atomic<int64_t>  m_callsFailed{0};
@@ -188,6 +212,12 @@ private:
 
     ProxyConfig m_cfg;
     EmitFn m_emit;
+    DescriptorQuery m_descriptorQuery;
+    std::mutex m_admissionMu;
+    std::condition_variable m_admissionCv;
+    std::deque<uint64_t> m_admissionQueue;
+    uint64_t m_nextAdmissionTicket = 1;
+    uint64_t m_admissionEpoch = 0;
 
     // Live slots, so shutdown can release anyone still waiting.
     std::deque<std::weak_ptr<CallSlot>> m_pending;

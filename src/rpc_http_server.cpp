@@ -226,9 +226,11 @@ RpcHttpServer::RpcHttpServer(Dispatch dispatch)
 
 RpcHttpServer::~RpcHttpServer() { stop(); }
 
-bool RpcHttpServer::start(const std::string& host, uint16_t port, std::string& err) {
+bool RpcHttpServer::start(const std::string& host, uint16_t port,
+                          uint32_t maxConnections, std::string& err) {
     std::lock_guard<std::mutex> lk(m_impl->mu);
     if (m_impl->daemon) { err = "http server already running"; return false; }
+    if (maxConnections == 0) { err = "http server connection limit must be positive"; return false; }
 
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
@@ -246,6 +248,10 @@ bool RpcHttpServer::start(const std::string& host, uint16_t port, std::string& e
         port, nullptr, nullptr,
         &onRequest, m_impl.get(),
         MHD_OPTION_SOCK_ADDR, reinterpret_cast<sockaddr*>(&addr),
+        // THREAD_PER_CONNECTION otherwise has no ceiling: every accepted
+        // socket also creates a thread. Keep both resources inside the same
+        // OS-derived budget as outbound verified calls.
+        MHD_OPTION_CONNECTION_LIMIT, static_cast<unsigned int>(maxConnections),
         MHD_OPTION_NOTIFY_COMPLETED, &onRequestCompleted, nullptr,
         MHD_OPTION_END);
     if (!d) {

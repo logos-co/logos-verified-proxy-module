@@ -4,6 +4,7 @@
 // processVerifProxyTasks, so these tests exercise the real cross-thread design
 // rather than a synchronous stand-in.
 
+#include <atomic>
 #include <chrono>
 #include <thread>
 
@@ -316,10 +317,10 @@ LOGOS_TEST(runtime_times_out_safely_when_a_call_never_completes) {
     rt.stop();   // must not crash on the abandoned slot
 }
 
-LOGOS_TEST(runtime_rejects_calls_beyond_the_in_flight_ceiling) {
-    // concurrency:"multi" spawns a QThread PER CALL, not a bounded pool, so
-    // without admission control a runaway caller becomes an OOM rather than an
-    // error string.
+LOGOS_TEST(runtime_queues_calls_beyond_the_in_flight_ceiling) {
+    // Multi-dispatch workers can arrive together. The reservation must happen
+    // before enqueueing to the proxy thread; checking m_inFlight (raised later
+    // by that thread) lets every caller race through the same open gate.
     auto t = LogosTestContext("verified_proxy_module");
     mockReset();
     t.mockCFunction("proxyCall_status").returns(mockNeverCompletes());
@@ -327,21 +328,202 @@ LOGOS_TEST(runtime_rejects_calls_beyond_the_in_flight_ceiling) {
     ProxyConfig cfg = testConfig();
     cfg.maxInFlight = 2;
     cfg.callTimeoutMs = 400;
+    cfg.queueTimeoutMs = 200;
 
     ProxyRuntime rt(nullptr);
     LOGOS_ASSERT_TRUE(rt.start(cfg).success);
 
-    std::vector<std::thread> hold;
-    for (int i = 0; i < 2; ++i)
-        hold.emplace_back([&rt] { rt.call("eth_blockNumber", json::array()); });
+    std::atomic<bool> go{false};
+    std::vector<StdLogosResult> results(3);
+    std::vector<std::thread> callers;
+    for (size_t i = 0; i < results.size(); ++i) {
+        callers.emplace_back([&, i] {
+            while (!go.load(std::memory_order_acquire)) std::this_thread::yield();
+            results[i] = rt.call("eth_blockNumber", json::array());
+        });
+    }
+    go.store(true, std::memory_order_release);
+    for (auto& th : callers) th.join();
 
-    // Give the pump time to dispatch both and raise m_inFlight.
-    std::this_thread::sleep_for(milliseconds(150));
-    const auto r = rt.call("eth_blockNumber", json::array());
+    int queueTimeouts = 0;
+    for (const auto& r : results) {
+        if (r.error.find("admission queue timed out") != std::string::npos) ++queueTimeouts;
+    }
+    LOGOS_ASSERT_EQ(queueTimeouts, 1);
+    LOGOS_ASSERT_EQ(t.cFunctionCallCount("proxyCall"), 2);
+    LOGOS_ASSERT_EQ(rt.statusSnapshot()["counters"]["queueTimeouts"].get<int64_t>(), 1);
+    rt.stop();
+}
+
+LOGOS_TEST(runtime_serves_the_admission_queue_in_fifo_order) {
+    auto t = LogosTestContext("verified_proxy_module");
+    mockReset();
+    mockHoldCompletions(true);
+
+    ProxyConfig cfg = testConfig();
+    cfg.maxInFlight = 1;
+    cfg.callTimeoutMs = 3000;
+    cfg.queueTimeoutMs = 2000;
+
+    ProxyRuntime rt(nullptr);
+    LOGOS_ASSERT_TRUE(rt.start(cfg).success);
+
+    StdLogosResult first;
+    StdLogosResult second;
+    StdLogosResult third;
+    std::thread a([&] { first = rt.call("first", json::array()); });
+    LOGOS_ASSERT_TRUE(spinUntil([&] { return t.cFunctionCallCount("proxyCall:first") == 1; }));
+
+    std::thread b([&] { second = rt.call("second", json::array()); });
+    LOGOS_ASSERT_TRUE(spinUntil([&] {
+        return rt.statusSnapshot()["resources"]["queuedCalls"].get<int64_t>() == 1;
+    }));
+    std::thread c([&] { third = rt.call("third", json::array()); });
+    LOGOS_ASSERT_TRUE(spinUntil([&] {
+        return rt.statusSnapshot()["resources"]["queuedCalls"].get<int64_t>() == 2;
+    }));
+
+    // Nothing beyond the admitted first call reaches libverifproxy while its
+    // slot is occupied. Releasing it drains the waiters in ticket order.
+    LOGOS_ASSERT_EQ(t.cFunctionCallCount("proxyCall"), 1);
+    mockHoldCompletions(false);
+    a.join();
+    b.join();
+    c.join();
+
+    LOGOS_ASSERT_TRUE(first.success);
+    LOGOS_ASSERT_TRUE(second.success);
+    LOGOS_ASSERT_TRUE(third.success);
+    const auto methods = mockProxyMethods();
+    LOGOS_ASSERT_EQ(methods.size(), static_cast<size_t>(3));
+    LOGOS_ASSERT_EQ(methods[0], std::string("first"));
+    LOGOS_ASSERT_EQ(methods[1], std::string("second"));
+    LOGOS_ASSERT_EQ(methods[2], std::string("third"));
+    const json counters = rt.statusSnapshot()["counters"];
+    LOGOS_ASSERT_EQ(counters["callsQueued"].get<int64_t>(), 2);
+    LOGOS_ASSERT_EQ(counters["queueTimeouts"].get<int64_t>(), 0);
+    rt.stop();
+}
+
+LOGOS_TEST(runtime_expires_a_call_that_waits_too_long_in_the_admission_queue) {
+    auto t = LogosTestContext("verified_proxy_module");
+    mockReset();
+    mockHoldCompletions(true);
+
+    ProxyConfig cfg = testConfig();
+    cfg.maxInFlight = 1;
+    cfg.callTimeoutMs = 3000;
+    cfg.queueTimeoutMs = 150;
+
+    ProxyRuntime rt(nullptr);
+    LOGOS_ASSERT_TRUE(rt.start(cfg).success);
+
+    StdLogosResult first;
+    std::thread active([&] { first = rt.call("first", json::array()); });
+    LOGOS_ASSERT_TRUE(spinUntil([&] { return t.cFunctionCallCount("proxyCall:first") == 1; }));
+
+    const auto t0 = steady_clock::now();
+    const auto queued = rt.call("second", json::array());
+    const auto elapsed = duration_cast<milliseconds>(steady_clock::now() - t0);
+
+    LOGOS_ASSERT_FALSE(queued.success);
+    LOGOS_ASSERT_CONTAINS(queued.error, "admission queue timed out");
+    LOGOS_ASSERT_CONTAINS(queued.error, "concurrent call ceiling");
+    LOGOS_ASSERT_GE(elapsed.count(), 100);
+    LOGOS_ASSERT_EQ(t.cFunctionCallCount("proxyCall"), 1);
+    LOGOS_ASSERT_EQ(rt.statusSnapshot()["counters"]["queueTimeouts"].get<int64_t>(), 1);
+
+    mockHoldCompletions(false);
+    active.join();
+    LOGOS_ASSERT_TRUE(first.success);
+    rt.stop();
+}
+
+LOGOS_TEST(runtime_derives_its_ceiling_from_the_posix_descriptor_budget) {
+    auto t = LogosTestContext("verified_proxy_module");
+    mockReset();
+
+    ProxyConfig cfg = testConfig();
+    cfg.maxInFlight = 64;
+    cfg.parallelBlockDownloads = 10; // estimate: 12 descriptors per call
+
+    ProxyRuntime rt(nullptr, [] { return DescriptorSnapshot{ 256, 36 }; });
+    LOGOS_ASSERT_TRUE(rt.start(cfg).success);
+    const json resources = rt.statusSnapshot()["resources"];
+    LOGOS_ASSERT_EQ(resources["effectiveMaxInFlight"].get<int64_t>(), 13);
+    LOGOS_ASSERT_EQ(resources["descriptorReserve"].get<int64_t>(), 64);
+    LOGOS_ASSERT_EQ(resources["estimatedDescriptorsPerCall"].get<int64_t>(), 12);
+    rt.stop();
+}
+
+LOGOS_TEST(runtime_refuses_to_start_without_one_safe_call_slot) {
+    auto t = LogosTestContext("verified_proxy_module");
+    mockReset();
+
+    ProxyRuntime rt(nullptr, [] { return DescriptorSnapshot{ 256, 192 }; });
+    const auto r = rt.start(testConfig());
     LOGOS_ASSERT_FALSE(r.success);
-    LOGOS_ASSERT_CONTAINS(r.error, "in flight");
+    LOGOS_ASSERT_CONTAINS(r.error, "not enough file descriptors");
+    LOGOS_ASSERT_EQ(t.cFunctionCallCount("startVerifProxy"), 0);
+}
 
-    for (auto& th : hold) th.join();
+LOGOS_TEST(runtime_times_out_a_queued_call_when_other_process_work_consumes_the_budget) {
+    auto t = LogosTestContext("verified_proxy_module");
+    mockReset();
+
+    std::atomic<int> queries{0};
+    ProxyRuntime rt(nullptr, [&] {
+        // start() sees room; admission sees that another module has since used
+        // it. 181 + one 12-descriptor call would cross the safe ceiling 192.
+        return queries.fetch_add(1) == 0
+            ? DescriptorSnapshot{ 256, 36 }
+            : DescriptorSnapshot{ 256, 181 };
+    });
+    ProxyConfig cfg = testConfig();
+    cfg.queueTimeoutMs = 150;
+    LOGOS_ASSERT_TRUE(rt.start(cfg).success);
+
+    const auto t0 = steady_clock::now();
+    const auto r = rt.call("eth_blockNumber", json::array());
+    const auto elapsed = duration_cast<milliseconds>(steady_clock::now() - t0);
+    LOGOS_ASSERT_FALSE(r.success);
+    LOGOS_ASSERT_CONTAINS(r.error, "admission queue timed out");
+    LOGOS_ASSERT_CONTAINS(r.error, "file-descriptor budget");
+    LOGOS_ASSERT_GE(elapsed.count(), 100);
+    LOGOS_ASSERT_EQ(t.cFunctionCallCount("proxyCall"), 0);
+    LOGOS_ASSERT_EQ(rt.statusSnapshot()["counters"]["resourceRejections"].get<int64_t>(), 1);
+    LOGOS_ASSERT_EQ(rt.statusSnapshot()["counters"]["queueTimeouts"].get<int64_t>(), 1);
+    rt.stop();
+}
+
+LOGOS_TEST(runtime_admits_a_queued_call_after_external_descriptor_pressure_eases) {
+    auto t = LogosTestContext("verified_proxy_module");
+    mockReset();
+
+    std::atomic<int> queries{0};
+    std::atomic<bool> pressure{true};
+    ProxyRuntime rt(nullptr, [&] {
+        if (queries.fetch_add(1) == 0) return DescriptorSnapshot{ 256, 36 };
+        return pressure.load(std::memory_order_acquire)
+            ? DescriptorSnapshot{ 256, 181 }
+            : DescriptorSnapshot{ 256, 36 };
+    });
+    ProxyConfig cfg = testConfig();
+    cfg.queueTimeoutMs = 2000;
+    LOGOS_ASSERT_TRUE(rt.start(cfg).success);
+
+    StdLogosResult result;
+    std::thread caller([&] { result = rt.call("eth_blockNumber", json::array()); });
+    LOGOS_ASSERT_TRUE(spinUntil([&] {
+        return rt.statusSnapshot()["resources"]["queuedCalls"].get<int64_t>() == 1;
+    }));
+    LOGOS_ASSERT_EQ(t.cFunctionCallCount("proxyCall"), 0);
+
+    pressure.store(false, std::memory_order_release);
+    caller.join();
+    LOGOS_ASSERT_TRUE(result.success);
+    LOGOS_ASSERT_EQ(t.cFunctionCallCount("proxyCall"), 1);
+    LOGOS_ASSERT_EQ(rt.statusSnapshot()["counters"]["queueTimeouts"].get<int64_t>(), 0);
     rt.stop();
 }
 
@@ -394,6 +576,43 @@ LOGOS_TEST(runtime_releases_a_blocked_caller_when_the_proxy_stops) {
     LOGOS_ASSERT_FALSE(captured.success);
     LOGOS_ASSERT_CONTAINS(captured.error, "shutting down");
     LOGOS_ASSERT_LT(elapsed.count(), 5000);   // nobody waits out callTimeoutMs
+}
+
+LOGOS_TEST(runtime_releases_an_admission_queued_caller_when_the_proxy_stops) {
+    auto t = LogosTestContext("verified_proxy_module");
+    mockReset();
+    t.mockCFunction("proxyCall_status").returns(mockNeverCompletes());
+
+    ProxyConfig cfg = testConfig();
+    cfg.maxInFlight = 1;
+    cfg.callTimeoutMs = 10000;
+    cfg.queueTimeoutMs = 10000;
+    cfg.drainTimeoutMs = 200;
+
+    ProxyRuntime rt(nullptr);
+    LOGOS_ASSERT_TRUE(rt.start(cfg).success);
+
+    StdLogosResult activeResult;
+    StdLogosResult queuedResult;
+    std::thread active([&] { activeResult = rt.call("first", json::array()); });
+    LOGOS_ASSERT_TRUE(spinUntil([&] { return t.cFunctionCallCount("proxyCall:first") == 1; }));
+    std::thread queued([&] { queuedResult = rt.call("second", json::array()); });
+    LOGOS_ASSERT_TRUE(spinUntil([&] {
+        return rt.statusSnapshot()["resources"]["queuedCalls"].get<int64_t>() == 1;
+    }));
+
+    const auto t0 = steady_clock::now();
+    rt.stop();
+    active.join();
+    queued.join();
+    const auto elapsed = duration_cast<milliseconds>(steady_clock::now() - t0);
+
+    LOGOS_ASSERT_FALSE(activeResult.success);
+    LOGOS_ASSERT_CONTAINS(activeResult.error, "shutting down");
+    LOGOS_ASSERT_FALSE(queuedResult.success);
+    LOGOS_ASSERT_CONTAINS(queuedResult.error, "shutting down");
+    LOGOS_ASSERT_EQ(t.cFunctionCallCount("proxyCall"), 1);
+    LOGOS_ASSERT_LT(elapsed.count(), 5000);
 }
 
 LOGOS_TEST(runtime_pump_does_not_busy_spin_while_idle) {

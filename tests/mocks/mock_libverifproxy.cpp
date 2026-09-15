@@ -38,12 +38,14 @@ struct MockCtx {
     std::deque<std::function<void()>> completions;
 };
 MockCtx g_ctx;
+std::atomic<bool> g_holdCompletions{false};
 
 // Thread-affinity ledger and a global call-ordering log: the two invariants
 // that matter most here and the two LogosCMockStore cannot express.
 std::mutex g_obsMu;
 std::unordered_map<std::string, std::thread::id> g_threadOf;
 std::vector<std::string> g_order;
+std::vector<std::string> g_proxyMethods;
 std::unordered_map<std::string, std::string> g_params;
 
 void observe(const char* fn) {
@@ -83,16 +85,23 @@ std::vector<std::string> mockCallOrder() {
     return g_order;
 }
 
+std::vector<std::string> mockProxyMethods() {
+    std::lock_guard<std::mutex> lk(g_obsMu);
+    return g_proxyMethods;
+}
+
 void mockReset() {
     {
         std::lock_guard<std::mutex> lk(g_obsMu);
         g_threadOf.clear();
         g_order.clear();
+        g_proxyMethods.clear();
         g_params.clear();
     }
     std::lock_guard<std::mutex> lk(g_ctx.mu);
     g_ctx.completions.clear();
     g_ctx.stop = false;
+    g_holdCompletions = false;
 }
 
 std::string mockParamsOf(const std::string& method) {
@@ -104,6 +113,10 @@ std::string mockParamsOf(const std::string& method) {
 size_t mockPendingCompletions() {
     std::lock_guard<std::mutex> lk(g_ctx.mu);
     return g_ctx.completions.size();
+}
+
+void mockHoldCompletions(bool hold) {
+    g_holdCompletions.store(hold, std::memory_order_release);
 }
 
 // -- the mocked C surface ----------------------------------------------------
@@ -141,7 +154,8 @@ extern "C" int processVerifProxyTasks(Context*) {
     std::function<void()> job;
     {
         std::lock_guard<std::mutex> lk(g_ctx.mu);
-        if (!g_ctx.completions.empty()) {
+        if (!g_holdCompletions.load(std::memory_order_acquire)
+            && !g_ctx.completions.empty()) {
             job = std::move(g_ctx.completions.front());
             g_ctx.completions.pop_front();
         }
@@ -158,6 +172,7 @@ extern "C" void proxyCall(Context* c, char* name, char* params,
     LOGOS_CMOCK_RECORD(std::string("proxyCall:") + (name ? name : ""));
     {
         std::lock_guard<std::mutex> lk(g_obsMu);
+        g_proxyMethods.emplace_back(name ? name : "");
         g_params[name ? name : ""] = params ? params : "";
     }
     enqueueCompletion("proxyCall", c, cb, ud);

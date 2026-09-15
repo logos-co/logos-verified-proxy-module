@@ -1,10 +1,12 @@
 #include "proxy_runtime.h"
 
+#include <algorithm>
 #include <cassert>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <ctime>
+#include <limits>
 #include <sstream>
 #include <utility>
 
@@ -104,7 +106,8 @@ const char* ProxyRuntime::stateName(State s) {
     return "unknown";
 }
 
-ProxyRuntime::ProxyRuntime(EmitFn emit) : m_emit(std::move(emit)) {}
+ProxyRuntime::ProxyRuntime(EmitFn emit, DescriptorQuery descriptorQuery)
+    : m_emit(std::move(emit)), m_descriptorQuery(std::move(descriptorQuery)) {}
 
 ProxyRuntime::~ProxyRuntime() {
     if (m_runActive.load()) stop();
@@ -119,6 +122,7 @@ ProxyRuntime::~ProxyRuntime() {
     { std::lock_guard<std::mutex> lk(m_startMu); m_shutdown = true; }
     m_startCv.notify_all();
     m_cv.notify_all();
+    m_admissionCv.notify_all();
     if (!m_thread.joinable()) return;
 
     // join() takes no deadline, so a proxy thread that never notices m_shutdown
@@ -150,6 +154,7 @@ std::string ProxyRuntime::blockedReport(const std::string& what) const {
       << ", stopRequested=" << (m_stopRequested.load() ? "yes" : "no")
       << ", shutdown=" << (m_shutdown.load() ? "yes" : "no")
       << ", inFlight=" << m_inFlight.load()
+      << ", admitted=" << m_admitted.load()
       << ", pumps=" << m_pumpCalls.load();
     // try_lock: a diagnostic that can itself block is worse than an incomplete one.
     std::unique_lock<std::mutex> lk(m_mu, std::try_to_lock);
@@ -182,9 +187,47 @@ StdLogosResult ProxyRuntime::start(const ProxyConfig& cfg) {
     if (m_runActive.load())
         return { false, {}, "proxy already started" };
 
-    m_cfg = cfg;
-    m_upstreamJson = cfg.toUpstreamJson();
-    m_stopRequested = false;
+    {
+        std::lock_guard<std::mutex> lk(m_admissionMu);
+        // A caller from the previous run can still be waking after stop(). A
+        // fresh epoch prevents it from crossing into this run if start()
+        // wins that race.
+        ++m_admissionEpoch;
+        m_admissionQueue.clear();
+        m_queuedNow = 0;
+        m_admitted = 0;
+        m_cfg = cfg;
+        m_upstreamJson = cfg.toUpstreamJson();
+        m_stopRequested = false;
+    }
+    m_admissionCv.notify_all();
+    m_inFlight = 0;
+
+    // Nimbus can fan one verified request out across parallelBlockDownloads
+    // fresh Chronos HTTP connections. Add two for the primary provider call
+    // and DNS/TLS/runtime overhead, with a floor for cheap methods.
+    const int64_t fanOutEstimate = cfg.parallelBlockDownloads
+            > std::numeric_limits<int64_t>::max() - 2
+        ? std::numeric_limits<int64_t>::max()
+        : cfg.parallelBlockDownloads + 2;
+    m_descriptorsPerCall = std::max<int64_t>(4, fanOutEstimate);
+    m_effectiveMaxInFlight = cfg.maxInFlight;
+
+    const DescriptorSnapshot initial = m_descriptorQuery();
+    const int64_t capacity = descriptorOperationCapacity(
+        initial, m_descriptorsPerCall.load());
+    if (capacity >= 0) {
+        m_effectiveMaxInFlight = std::min<int64_t>(cfg.maxInFlight, capacity);
+        if (capacity == 0) {
+            const std::string why =
+                "not enough file descriptors to start the proxy safely (open "
+                + std::to_string(initial.openCount) + " of "
+                + std::to_string(initial.softLimit) + "; reserve "
+                + std::to_string(descriptorReserve(initial.softLimit)) + ")";
+            setState(State::Failed, why);
+            return { false, {}, why };
+        }
+    }
 
     // The thread outlives every individual run: see the note on m_shutdown.
     // Created lazily so a module that never starts the proxy never spawns it.
@@ -228,8 +271,15 @@ StdLogosResult ProxyRuntime::stop() {
             return { false, {}, "proxy is not running" };
     }
 
-    m_stopRequested = true;
+    // Serialize the gate with call()'s enqueue. Without this lock a caller can
+    // observe Running immediately after the pump's final drain, enqueue work,
+    // and then watch the pump exit without ever dispatching it.
+    {
+        std::lock_guard<std::mutex> queueLock(m_mu);
+        m_stopRequested = true;
+    }
     m_cv.notify_all();
+    m_admissionCv.notify_all();
 
     // Wait for the RUN to finish, not for the thread to exit — the thread is
     // reused by the next start(). The drain is bounded (drainTimeoutMs plus at
@@ -412,6 +462,14 @@ void ProxyRuntime::teardown() {
     ::freeContext(m_ctx);
     m_ctx = nullptr;
     m_runActive = false;
+    // The C ABI cannot cancel calls. Once the Context is gone no callback can
+    // release their reservations, so the run teardown is the authority.
+    m_inFlight = 0;
+    {
+        std::lock_guard<std::mutex> lk(m_admissionMu);
+        m_admitted = 0;
+    }
+    m_admissionCv.notify_all();
 
     setState(State::Stopped);
     if (m_emit) m_emit("proxyStopped", json{ { "success", true } }.dump());
@@ -427,7 +485,11 @@ void ProxyRuntime::teardown() {
 
 void ProxyRuntime::failAllPending(const std::string& why) {
     std::deque<std::weak_ptr<CallSlot>> pending;
-    { std::lock_guard<std::mutex> lk(m_mu); pending.swap(m_pending); }
+    {
+        std::lock_guard<std::mutex> lk(m_mu);
+        pending.swap(m_pending);
+        m_queue.clear();
+    }
 
     for (auto& w : pending) {
         auto slot = w.lock();
@@ -469,9 +531,9 @@ StdLogosResult ProxyRuntime::call(const std::string& method, const json& params)
         return { false, {}, "proxy not running" };
     if (!params.is_array())
         return { false, {}, "params must be a JSON array" };
-    if (m_inFlight.load() >= m_cfg.maxInFlight)
-        return { false, {}, "too many calls in flight (max " +
-                            std::to_string(m_cfg.maxInFlight) + ")" };
+    std::string admissionError;
+    if (!waitForAdmission(admissionError))
+        return { false, {}, admissionError };
 
     auto slot = std::make_shared<CallSlot>();
     slot->id     = m_nextId.fetch_add(1, std::memory_order_relaxed);
@@ -480,6 +542,11 @@ StdLogosResult ProxyRuntime::call(const std::string& method, const json& params)
 
     {
         std::lock_guard<std::mutex> lk(m_mu);
+        if (m_stopRequested.load(std::memory_order_acquire)
+            || m_shutdown.load(std::memory_order_acquire)) {
+            releaseAdmission();
+            return { false, {}, "proxy shutting down" };
+        }
         m_pending.push_back(slot);
         m_queue.push_back([this, slot](Context* ctx) {
             auto* box = new CallBox{ slot, this };   // freed in the callback
@@ -567,7 +634,153 @@ json ProxyRuntime::pumpHistogram() const {
 
 void ProxyRuntime::noteFinished(uint64_t, bool ok) {
     m_inFlight.fetch_sub(1, std::memory_order_acq_rel);
+    releaseAdmission();
     if (!ok) m_callsFailed.fetch_add(1, std::memory_order_relaxed);
+}
+
+ProxyRuntime::AdmissionBlock ProxyRuntime::admissionBlockLocked(std::string& error) {
+    const int64_t admitted = m_admitted.load(std::memory_order_relaxed);
+    const int64_t effective = m_effectiveMaxInFlight.load(std::memory_order_relaxed);
+    if (admitted >= effective) {
+        error = "the concurrent call ceiling is busy (effective max "
+              + std::to_string(effective) + ", configured max "
+              + std::to_string(m_cfg.maxInFlight) + ")";
+        return AdmissionBlock::Concurrency;
+    }
+
+    const DescriptorSnapshot live = m_descriptorQuery();
+    const int64_t perCall = m_descriptorsPerCall.load(std::memory_order_relaxed);
+    if (live.softLimit >= 0 && live.openCount >= 0) {
+        const int64_t available = live.softLimit - descriptorReserve(live.softLimit)
+                                - live.openCount;
+        // Some admitted calls may not have opened their sockets yet, so count
+        // every reservation again here. This deliberately errs on the safe
+        // side when active sockets are already reflected in openCount.
+        const int64_t reservableCalls = available > 0 ? available / perCall : 0;
+        if (admitted >= reservableCalls) {
+            error = "OS file-descriptor budget is exhausted (open "
+                  + std::to_string(live.openCount) + " of "
+                  + std::to_string(live.softLimit) + ", reserving "
+                  + std::to_string(descriptorReserve(live.softLimit))
+                  + " for the host)";
+            return AdmissionBlock::Descriptors;
+        }
+    }
+
+    error.clear();
+    return AdmissionBlock::None;
+}
+
+bool ProxyRuntime::removeAdmissionTicketLocked(uint64_t ticket) {
+    const auto it = std::find(m_admissionQueue.begin(), m_admissionQueue.end(), ticket);
+    if (it == m_admissionQueue.end()) return false;
+    m_admissionQueue.erase(it);
+    m_queuedNow.fetch_sub(1, std::memory_order_relaxed);
+    return true;
+}
+
+bool ProxyRuntime::waitForAdmission(std::string& error) {
+    std::unique_lock<std::mutex> lk(m_admissionMu);
+
+    if (m_stopRequested.load(std::memory_order_acquire)
+        || m_shutdown.load(std::memory_order_acquire)) {
+        error = "proxy shutting down";
+        return false;
+    }
+
+    const uint64_t epoch = m_admissionEpoch;
+    std::string blocker;
+    AdmissionBlock blockedBy = AdmissionBlock::None;
+
+    // Preserve FIFO once anybody is waiting. A late caller must not steal a
+    // slot merely because it happened to take this mutex before the front
+    // waiter woke up.
+    if (m_admissionQueue.empty()) {
+        blockedBy = admissionBlockLocked(blocker);
+        if (blockedBy == AdmissionBlock::None) {
+            m_admitted.fetch_add(1, std::memory_order_release);
+            return true;
+        }
+    } else {
+        blocker = "earlier calls are waiting in the admission queue";
+        blockedBy = AdmissionBlock::Concurrency;
+    }
+
+    const uint64_t ticket = m_nextAdmissionTicket++;
+    m_admissionQueue.push_back(ticket);
+    m_queuedNow.fetch_add(1, std::memory_order_relaxed);
+    m_callsQueued.fetch_add(1, std::memory_order_relaxed);
+    const auto deadline = steady_clock::now() + milliseconds(m_cfg.queueTimeoutMs);
+    m_admissionCv.notify_all();
+
+    for (;;) {
+        if (m_shutdown.load(std::memory_order_acquire)
+            || m_stopRequested.load(std::memory_order_acquire)
+            || epoch != m_admissionEpoch) {
+            removeAdmissionTicketLocked(ticket);
+            error = "proxy shutting down";
+            lk.unlock();
+            m_admissionCv.notify_all();
+            return false;
+        }
+
+        if (!m_admissionQueue.empty() && m_admissionQueue.front() == ticket) {
+            blockedBy = admissionBlockLocked(blocker);
+            if (blockedBy == AdmissionBlock::None) {
+                m_admissionQueue.pop_front();
+                m_queuedNow.fetch_sub(1, std::memory_order_relaxed);
+                m_admitted.fetch_add(1, std::memory_order_release);
+                lk.unlock();
+                // There may be room for more than one waiter. Wake the next
+                // ticket now rather than making it wait for this call to end.
+                m_admissionCv.notify_all();
+                return true;
+            }
+        }
+
+        const auto now = steady_clock::now();
+        if (now >= deadline) {
+            removeAdmissionTicketLocked(ticket);
+            m_queueTimeouts.fetch_add(1, std::memory_order_relaxed);
+            if (blockedBy == AdmissionBlock::Descriptors)
+                m_resourceRejections.fetch_add(1, std::memory_order_relaxed);
+            error = "admission queue timed out after "
+                  + std::to_string(m_cfg.queueTimeoutMs) + "ms waiting for capacity";
+            if (!blocker.empty()) error += "; last blocker: " + blocker;
+            lk.unlock();
+            m_admissionCv.notify_all();
+            return false;
+        }
+
+        // Slot releases notify directly. The bounded poll also notices when
+        // descriptors consumed elsewhere in the host become available again.
+        m_admissionCv.wait_until(lk, std::min(deadline, now + milliseconds(50)));
+    }
+}
+
+bool ProxyRuntime::tryAdmit(std::string& error) {
+    std::lock_guard<std::mutex> lk(m_admissionMu);
+
+    // Heartbeats/head probes run on the only thread that can complete active
+    // work, so they must never wait. They also yield to queued user traffic.
+    if (!m_admissionQueue.empty()) {
+        error = "user calls are waiting for admission";
+        return false;
+    }
+    if (admissionBlockLocked(error) != AdmissionBlock::None)
+        return false;
+
+    m_admitted.fetch_add(1, std::memory_order_release);
+    return true;
+}
+
+void ProxyRuntime::releaseAdmission() {
+    {
+        std::lock_guard<std::mutex> lk(m_admissionMu);
+        const int64_t admitted = m_admitted.load(std::memory_order_relaxed);
+        if (admitted > 0) m_admitted.store(admitted - 1, std::memory_order_release);
+    }
+    m_admissionCv.notify_all();
 }
 
 // ---------------------------------------------------------------------------
@@ -576,6 +789,9 @@ void ProxyRuntime::noteFinished(uint64_t, bool ok) {
 
 void ProxyRuntime::issueKeepAlive() {
     assert(std::this_thread::get_id() == m_threadId);
+
+    std::string ignored;
+    if (!tryAdmit(ignored)) return;
 
     // eth_syncing is the cheapest possible keep-alive: its frontend runs
     // engine.beaconSync() and touches no execution backend, and issuing it
@@ -608,6 +824,9 @@ void ProxyRuntime::issueKeepAlive() {
 // outright. Same fire-and-forget shape; observed in noteHeadProbe().
 void ProxyRuntime::issueHeadProbe() {
     assert(std::this_thread::get_id() == m_threadId);
+
+    std::string ignored;
+    if (!tryAdmit(ignored)) return;
 
     auto slot = std::make_shared<CallSlot>();
     slot->id = m_nextId.fetch_add(1, std::memory_order_relaxed);
@@ -682,8 +901,23 @@ json ProxyRuntime::statusSnapshot() const {
         { "callsTotal",  m_callsTotal.load() },
         { "callsFailed", m_callsFailed.load() },
         { "callsInFlight", m_inFlight.load() },
+        { "callsAdmitted", m_admitted.load() },
         { "leakedCalls", m_leaked.load() },
         { "heartbeatFailures", m_heartbeatFailures.load() },
+        { "resourceRejections", m_resourceRejections.load() },
+        { "callsQueued", m_callsQueued.load() },
+        { "queueTimeouts", m_queueTimeouts.load() },
+    };
+    const DescriptorSnapshot descriptors = m_descriptorQuery();
+    j["resources"] = json{
+        { "openDescriptors", descriptors.openCount },
+        { "softDescriptorLimit", descriptors.softLimit },
+        { "descriptorReserve", descriptorReserve(descriptors.softLimit) },
+        { "estimatedDescriptorsPerCall", m_descriptorsPerCall.load() },
+        { "configuredMaxInFlight", m_cfg.maxInFlight },
+        { "effectiveMaxInFlight", m_effectiveMaxInFlight.load() },
+        { "queuedCalls", m_queuedNow.load() },
+        { "queueTimeoutMs", m_cfg.queueTimeoutMs },
     };
     j["keepAlive"] = m_cfg.keepAlive;
     j["pump"] = pumpHistogram();

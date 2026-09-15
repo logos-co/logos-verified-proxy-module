@@ -78,6 +78,10 @@ struct ProxyConfig {
 
     // ── Module-side knobs (never sent upstream) ──────────────────────────
     int64_t callTimeoutMs = 30000;
+    /// How long a user call may wait for an in-flight/file-descriptor slot.
+    /// This is separate from callTimeoutMs: the latter starts only after the
+    /// call has been admitted and handed to libverifproxy.
+    int64_t queueTimeoutMs = 30000;
     int64_t startTimeoutMs = 120000;
     /// Bound on the shutdown drain — a POLLING bound, not a hard one. The drain
     /// loop checks the deadline BETWEEN `processVerifProxyTasks` calls, and a

@@ -7,6 +7,7 @@
   "type": "core",
   "interface": "universal",
   "concurrency": "multi",
+  "max_workers": 4,
   "category": "wallet",
   "main": "verified_proxy_module_plugin",
   "codegen": {

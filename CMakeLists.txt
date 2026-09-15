@@ -23,6 +23,8 @@ logos_module(
         src/proxy_config.cpp
         src/proxy_runtime.h
         src/proxy_runtime.cpp
+        src/resource_budget.h
+        src/resource_budget.cpp
         src/rpc_http_server.h
         src/rpc_http_server.cpp
         src/beacon_client.h
@@ -70,7 +72,7 @@ if(APPLE)
     # No explicit -lc++: CMake already links the C++ runtime for a CXX target,
     # and naming it again only produces a "duplicate libraries" warning.
     target_link_libraries(verified_proxy_module_module_plugin PRIVATE
-        "-framework Security")
+        "-framework Security" proc)
 elseif(WIN32)
     # A static Nim archive records no imports, so the plugin must name the Win32
     # set itself. Upstream additionally says -lc++, for llvm-mingw; do NOT

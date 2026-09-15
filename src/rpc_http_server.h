@@ -40,7 +40,8 @@ public:
 
     /// Bind and serve. Returns false with a reason on failure (port in use,
     /// bad host, libmicrohttpd refused).
-    bool start(const std::string& host, uint16_t port, std::string& err);
+    bool start(const std::string& host, uint16_t port,
+               uint32_t maxConnections, std::string& err);
     void stop();
 
     bool running() const;
