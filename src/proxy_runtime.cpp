@@ -26,6 +26,11 @@ std::once_flag g_nimMainOnce;
 /// fails in half a minute instead of wedging the process until CI gives up.
 constexpr int kThreadExitDeadlineMs = 30000;
 
+/// When the expired-at-the-front walk stops being enough and m_pending gets a
+/// full sweep. Above any plausible maxInFlight, so a healthy run never pays for
+/// one; small enough that the deque cannot grow past a few kilobytes.
+constexpr size_t kPendingSweepAt = 256;
+
 std::string tidOf(std::thread::id id) {
     std::ostringstream o; o << id; return o.str();
 }
@@ -301,11 +306,9 @@ void ProxyRuntime::threadMain() {
     m_threadId = std::this_thread::get_id();
 
     // NimMain must run before anything else (library/nim.cfg sets --noMain:on),
-    // and it binds the Nim runtime to THIS thread for good: this build compiles
-    // neither setupForeignThreadGc nor tearDownForeignThreadGc, since both call
-    // sites in verifproxy.nim sit behind `when defined(setupForeignThreadGc)`
-    // and nothing defines it. Any other thread calling into the library has no
-    // GC state and dies in startVerifProxy.
+    // and it binds the Nim runtime to THIS thread for good. Any other thread
+    // calling into the library dies in startVerifProxy; see the note on
+    // m_shutdown for why the foreign-thread GC hooks do not change that.
     std::call_once(g_nimMainOnce, [] { ::NimMain(); });
 
     // One thread, many runs. Everything that touches a verifproxy.h symbol
@@ -337,7 +340,6 @@ void ProxyRuntime::runOnce() {
     // teardown(). Reset the per-run counters that describe the CURRENT run so
     // a restart does not inherit the last run's health.
     m_heartbeatStreak.store(0, std::memory_order_relaxed);
-    m_beatsSinceHead.store(0, std::memory_order_relaxed);
     {
         std::lock_guard<std::mutex> lk(m_errMu);
         m_headBlockNumber.clear();
@@ -398,15 +400,19 @@ void ProxyRuntime::runOnce() {
 
         if (m_inFlight.load() == 0 && keepAliveEnabled()
             && steady_clock::now() >= nextKeepAlive) {
-            // Every Nth beat, ask for the head as well. The heartbeat itself
+            // Ask for the head on EVERY beat, head probe first. The heartbeat
             // cannot report it — eth_syncing answers a hardcoded `false` — and
-            // probing on every beat would multiply execution-backend traffic
-            // for a number that only has to be roughly current.
-            static constexpr int64_t kHeadEveryBeats = 5;
-            if (m_beatsSinceHead.fetch_add(1, std::memory_order_relaxed) + 1 >= kHeadEveryBeats) {
-                m_beatsSinceHead.store(0, std::memory_order_relaxed);
-                issueHeadProbe();
-            }
+            // the probe is not the extra round trip it looks like: both methods
+            // open with the engine's beaconSync(), which serialises them on one
+            // async lock, so whichever runs first pays for the light-client
+            // sync and the second finds isSynced() true and skips it. The
+            // number itself comes from the LOCAL headerStore, not from an
+            // execution backend. One sync round per beat either way, and a head
+            // that is never more than one slot old — which consumers depend on:
+            // eth_rpc's readiness gate calls the proxy "not tracking" once
+            // head.updatedAt is 60s behind the snapshot's own clock, so with the
+            // beat floored at a slot, an every-Nth-beat probe would trip it.
+            issueHeadProbe();
             issueKeepAlive();
             nextKeepAlive = steady_clock::now() + milliseconds(m_cfg.keepAliveIntervalMs);
         }
@@ -508,6 +514,16 @@ void ProxyRuntime::failAllPending(const std::string& why) {
     }
 }
 
+void ProxyRuntime::prunePendingLocked() {
+    while (!m_pending.empty() && m_pending.front().expired()) m_pending.pop_front();
+    // The heartbeat alone pushes one entry per beat for the life of a run, so
+    // a front walk that a single stuck slot can block is not enough on its own.
+    if (m_pending.size() < kPendingSweepAt) return;
+    m_pending.erase(std::remove_if(m_pending.begin(), m_pending.end(),
+                                   [](const std::weak_ptr<CallSlot>& w) { return w.expired(); }),
+                    m_pending.end());
+}
+
 void ProxyRuntime::drainCommands() {
     assert(std::this_thread::get_id() == m_threadId);
     for (;;) {
@@ -547,6 +563,7 @@ StdLogosResult ProxyRuntime::call(const std::string& method, const json& params)
             releaseAdmission();
             return { false, {}, "proxy shutting down" };
         }
+        prunePendingLocked();
         m_pending.push_back(slot);
         m_queue.push_back([this, slot](Context* ctx) {
             auto* box = new CallBox{ slot, this };   // freed in the callback
@@ -816,6 +833,7 @@ void ProxyRuntime::issueKeepAlive() {
     // Fire and forget; the outcome is observed on a later pump turn by
     // pollHeartbeat(). Recording the slot lets shutdown release it.
     std::lock_guard<std::mutex> lk(m_mu);
+    prunePendingLocked();
     m_pending.push_back(slot);
 }
 
@@ -840,6 +858,7 @@ void ProxyRuntime::issueHeadProbe() {
                 &ProxyRuntime::callbackTrampoline, box);
 
     std::lock_guard<std::mutex> lk(m_mu);
+    prunePendingLocked();
     m_pending.push_back(slot);
 }
 
@@ -897,12 +916,18 @@ json ProxyRuntime::statusSnapshot() const {
         j["head"] = json{ { "blockNumber", m_headBlockNumber },
                           { "updatedAt", m_headUpdatedAt } };
     }
+    size_t pendingSlots = 0;
+    { std::lock_guard<std::mutex> lk(m_mu); pendingSlots = m_pending.size(); }
     j["counters"] = json{
         { "callsTotal",  m_callsTotal.load() },
         { "callsFailed", m_callsFailed.load() },
         { "callsInFlight", m_inFlight.load() },
         { "callsAdmitted", m_admitted.load() },
         { "leakedCalls", m_leaked.load() },
+        // Slots the runtime is still tracking so shutdown can release them.
+        // Bounded by pruning; a number that climbs with uptime is the leak
+        // this counter exists to make visible.
+        { "pendingSlots", static_cast<int64_t>(pendingSlots) },
         { "heartbeatFailures", m_heartbeatFailures.load() },
         { "resourceRejections", m_resourceRejections.load() },
         { "callsQueued", m_callsQueued.load() },

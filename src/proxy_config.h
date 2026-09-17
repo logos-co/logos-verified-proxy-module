@@ -42,6 +42,16 @@ struct NetworkProfile {
 /// The supported networks, in the order a UI should offer them.
 const std::vector<NetworkProfile>& networkProfiles();
 
+/// One beacon slot. mainnet, sepolia and hoodi all run the Ethereum 12-second
+/// slot, so this is a constant rather than a NetworkProfile column: a chain
+/// with a different slot time cannot be configured without first being added
+/// to the whitelist above, which is where the value would then belong.
+///
+/// It is the floor under `keepAliveIntervalMs`, because the heartbeat's only
+/// effect is to drive `syncOnce()` and the light client's optimistic header
+/// advances at most once per slot. See `keepAliveIntervalMs`.
+constexpr int64_t kBeaconSlotMs = 12000;
+
 /// Lookup by name, or nullptr when the network is not supported.
 const NetworkProfile* networkProfile(const std::string& name);
 
@@ -103,7 +113,20 @@ struct ProxyConfig {
     /// a consumer polling block numbers will see as time running backwards.
     /// Treat it as a diagnostic setting, not a supported deployment.
     std::string keepAlive = "interval";
-    int64_t keepAliveIntervalMs = 1000;
+    /// How often the heartbeat runs. CLAMPED UP to `kBeaconSlotMs` by
+    /// fromJson(), and the clamped value is what getConfig() reports back.
+    ///
+    /// Every frontend method except `eth_chainId` opens with `beaconSync()`,
+    /// which takes the engine's sync lock and runs a full `syncOnce()` whenever
+    /// `isSynced()` is false — and `isSynced()` is `optimisticSlot + 1 >=
+    /// currentSlot`, i.e. slot-granular. It goes false at the top of each slot
+    /// and back to true once the beacon node publishes that slot's optimistic
+    /// update, a few seconds in, so at the 1000ms this used to default to the
+    /// four or five beats inside that window each re-fetch the same update and
+    /// hand it back to the processor, which discards it as `Duplicate`. One
+    /// fetch per slot is all the chain can answer; the rest is traffic against
+    /// the beacon endpoint and churn in the library's Nim heap.
+    int64_t keepAliveIntervalMs = kBeaconSlotMs;
     bool autoStart = false;
 
     /// Optional JSON-RPC 2.0 endpoint in front of the proxy.

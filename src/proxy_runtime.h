@@ -117,6 +117,12 @@ private:
     void drainCommands();
     void issueKeepAlive();
     void failAllPending(const std::string& why);
+    /// Drop expired entries from m_pending. Call under m_mu, before pushing.
+    /// Expired entries leave in issue order, so the front walk is O(1)
+    /// amortised; the sweep exists for the case that breaks it — a user call
+    /// that timed out keeps its slot alive (the CallBox owns a share) and can
+    /// sit in front of any number of expired ones.
+    void prunePendingLocked();
     void setState(State s, const std::string& error = {});
     bool keepAliveEnabled() const;
 
@@ -168,7 +174,6 @@ private:
     // Consecutive failures, not the lifetime total: one blip must not latch
     // the proxy into degraded forever.
     std::atomic<int64_t>  m_heartbeatStreak{0};
-    std::atomic<int64_t>  m_beatsSinceHead{0};
     std::atomic<int64_t>  m_pumpCalls{0};
     std::atomic<int64_t>  m_pumpMaxMs{0};
     std::atomic<int64_t>  m_pumpIdle[kPumpBuckets]{};
@@ -180,13 +185,22 @@ private:
     //
     // ONE thread for the life of this object, not one per start().
     //
-    // The Nim runtime is bound to whichever thread ran NimMain(), and this
-    // build compiles NEITHER setupForeignThreadGc nor tearDownForeignThreadGc:
-    // both sites in verifproxy.nim sit behind `when defined(setupForeignThreadGc)`
-    // and nothing defines it. So a second thread has no GC state at all and
-    // segfaults inside startVerifProxy — reproduced deterministically against
-    // the real archive, same network and config both times: new thread -> 139
-    // (SIGSEGV), same thread -> clean, with a fresh Context returned.
+    // The Nim runtime is bound to whichever thread ran NimMain(), and every
+    // later entry into the library must be on that same thread — reproduced
+    // deterministically against the real archive, same network and config both
+    // times: new thread -> 139 (SIGSEGV), same thread -> clean, with a fresh
+    // Context returned.
+    //
+    // `library/nim.cfg` DOES set -d:setupForeignThreadGc, so both
+    // `startVerifProxy`'s setupForeignThreadGc() and `stopVerifProxy`'s
+    // tearDownForeignThreadGc() are compiled in (both symbols are undefined
+    // references in libverifproxy.a). Neither rescues a foreign thread here,
+    // and the teardown side makes one strictly worse: Nim's guards key on the
+    // thread-local `threadType`, which threadimpl.nim sets to NimThread on the
+    // thread that ran NimMain, so on THIS thread both calls are no-ops — while
+    // on a foreign thread setupForeignThreadGc() would give it a SEPARATE refc
+    // heap, and stopVerifProxy() would then zeroMem() that whole heap out from
+    // under every object the run allocated.
     //
     // start()/stop() are therefore COMMANDS posted to this thread, and only the
     // destructor ends it.
@@ -219,6 +233,9 @@ private:
     uint64_t m_nextAdmissionTicket = 1;
     uint64_t m_admissionEpoch = 0;
 
-    // Live slots, so shutdown can release anyone still waiting.
+    // Live slots, so shutdown can release anyone still waiting. Pruned on every
+    // push: a slot's control block — and with make_shared the CallSlot storage
+    // behind it, a mutex and a condvar and three strings — stays alive as long
+    // as one weak_ptr names it, so an unpruned deque grows for the whole run.
     std::deque<std::weak_ptr<CallSlot>> m_pending;
 };

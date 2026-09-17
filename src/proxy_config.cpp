@@ -309,6 +309,16 @@ bool ProxyConfig::fromJson(const json& in, ProxyConfig& out, std::string& err) {
     if (out.startTimeoutMs <= 0) { err = "'startTimeoutMs' must be positive"; return false; }
     if (out.maxInFlight <= 0)    { err = "'maxInFlight' must be positive";    return false; }
     if (out.pumpIntervalMs <= 0) { err = "'pumpIntervalMs' must be positive"; return false; }
+    if (out.keepAliveIntervalMs <= 0) {
+        err = "'keepAliveIntervalMs' must be positive";
+        return false;
+    }
+
+    // Raise, never reject: an existing config asking for 1000ms is not wrong,
+    // it is just asking for work that cannot produce a different answer. The
+    // clamped value is what raw()/redacted() echo, so getConfig() shows the
+    // interval the module will actually use rather than the one it was handed.
+    out.keepAliveIntervalMs = std::max(out.keepAliveIntervalMs, kBeaconSlotMs);
 
     return true;
 }

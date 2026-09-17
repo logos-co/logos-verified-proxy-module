@@ -136,9 +136,37 @@ LOGOS_TEST(config_rejects_nonsensical_module_knobs) {
     LOGOS_ASSERT_FALSE(accepts(withField("queueTimeoutMs", 0), err));
     LOGOS_ASSERT_FALSE(accepts(withField("startTimeoutMs", -1), err));
     LOGOS_ASSERT_FALSE(accepts(withField("maxInFlight", 0), err));
+    LOGOS_ASSERT_FALSE(accepts(withField("keepAliveIntervalMs", 0), err));
     LOGOS_ASSERT_FALSE(accepts(withField("keepAlive", "sometimes"), err));
     LOGOS_ASSERT_TRUE(accepts(withField("keepAlive", "continuous"), err));
     LOGOS_ASSERT_TRUE(accepts(withField("keepAlive", "off"), err));
+}
+
+LOGOS_TEST(config_raises_a_sub_slot_keep_alive_interval_to_one_slot) {
+    // The heartbeat's whole effect is to drive the engine's syncOnce(), and the
+    // light client's optimistic header advances at most once per 12s slot. A
+    // 1000ms beat — what this module shipped with, and what the crash in #11
+    // was running — therefore buys nothing and costs several redundant beacon
+    // fetches and light-client verification rounds per slot.
+    //
+    // Raised, not rejected: a config in the field asking for 1000 is not
+    // invalid, and a module that refuses to load over it would be worse.
+    ProxyConfig c;
+    std::string err;
+    LOGOS_ASSERT_TRUE(ProxyConfig::fromJson(withField("keepAliveIntervalMs", 1000), c, err));
+    LOGOS_ASSERT_EQ(c.keepAliveIntervalMs, kBeaconSlotMs);
+
+    // The clamp is visible, not silent: getConfig() reports what will run.
+    LOGOS_ASSERT_EQ(c.redacted()["keepAliveIntervalMs"].get<int64_t>(), kBeaconSlotMs);
+
+    // An operator asking for a SLOWER beat keeps it — the floor only raises.
+    LOGOS_ASSERT_TRUE(ProxyConfig::fromJson(withField("keepAliveIntervalMs", 60000), c, err));
+    LOGOS_ASSERT_EQ(c.keepAliveIntervalMs, static_cast<int64_t>(60000));
+
+    // ...and the default is already a whole slot, so the clamp is not load-
+    // bearing for a config that says nothing about it.
+    LOGOS_ASSERT_TRUE(ProxyConfig::fromJson(baseConfig(), c, err));
+    LOGOS_ASSERT_EQ(c.keepAliveIntervalMs, kBeaconSlotMs);
 }
 
 // --- translation to the upstream shape --------------------------------------

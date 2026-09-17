@@ -690,6 +690,61 @@ LOGOS_TEST(runtime_head_probe_records_the_block_number) {
     LOGOS_ASSERT_GT(s["head"]["updatedAt"].get<int64_t>(), 0);
 }
 
+LOGOS_TEST(runtime_probes_the_head_on_every_beat) {
+    // It used to be every fifth beat, to avoid "multiplying execution-backend
+    // traffic". That premise was wrong: upstream's eth_blockNumber answers from
+    // the LOCAL headerStore and touches no execution backend, and it opens with
+    // the same beaconSync() the heartbeat does — so the two serialise on the
+    // engine's sync lock and share ONE light-client round per beat. Probing
+    // every beat is therefore free, and with the beat now a whole slot long,
+    // every fifth would have left the head a minute stale.
+    auto t = LogosTestContext("verified_proxy_module");
+    mockReset();
+
+    ProxyConfig cfg = testConfig();
+    cfg.keepAlive = "interval";
+    cfg.keepAliveIntervalMs = 20;
+
+    ProxyRuntime rt(nullptr);
+    LOGOS_ASSERT_TRUE(rt.start(cfg).success);
+    const bool beat = spinUntil(
+        [&] { return t.cFunctionCallCount("proxyCall:eth_syncing") >= 4; });
+    const int beats  = t.cFunctionCallCount("proxyCall:eth_syncing");
+    const int probes = t.cFunctionCallCount("proxyCall:eth_blockNumber");
+    rt.stop();
+
+    LOGOS_ASSERT_TRUE(beat);
+    // One probe per beat. The probe is issued FIRST, so it may lead by one.
+    LOGOS_ASSERT_GE(probes, beats);
+    LOGOS_ASSERT_LE(probes, beats + 1);
+}
+
+LOGOS_TEST(runtime_pending_slots_stay_bounded_across_many_beats) {
+    // Every beat used to append two weak_ptrs to m_pending that nothing removed
+    // before teardown. make_shared puts the CallSlot's storage in the same
+    // block as its control block, so a weak_ptr keeps a mutex, a condvar and
+    // three strings alive — at the 1s beat of issue #11, thousands of them per
+    // hour, in the class whose job is bounding this process' resources.
+    auto t = LogosTestContext("verified_proxy_module");
+    mockReset();
+
+    ProxyConfig cfg = testConfig();
+    cfg.keepAlive = "interval";
+    cfg.keepAliveIntervalMs = 5;
+
+    ProxyRuntime rt(nullptr);
+    LOGOS_ASSERT_TRUE(rt.start(cfg).success);
+    const bool beat = spinUntil(
+        [&] { return t.cFunctionCallCount("proxyCall:eth_syncing") >= 25; });
+    const json s = rt.statusSnapshot();
+    rt.stop();
+
+    LOGOS_ASSERT_TRUE(beat);
+    // 25 beats is 50 slots issued. Anything near that is the old behaviour;
+    // a handful is the live ones plus whatever has not been walked off yet.
+    LOGOS_ASSERT_LT(s["counters"]["pendingSlots"].get<int64_t>(), static_cast<int64_t>(16));
+}
+
 LOGOS_TEST(runtime_consecutive_heartbeat_failures_degrade_the_proxy) {
     // The error string of a failing heartbeat is the only machine-readable
     // sync-health signal the C ABI exposes. Three in a row is the threshold —

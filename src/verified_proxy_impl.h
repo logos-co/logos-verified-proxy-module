@@ -57,7 +57,8 @@ public:
     ///   "tuning": { "maxBlockWalk": 1000, "headerStoreLen": 256 },
     ///   "callTimeoutMs": 30000, "queueTimeoutMs": 30000,
     ///   "startTimeoutMs": 120000,
-    ///   "keepAlive": "interval", "keepAliveIntervalMs": 1000,   // do not use "off"
+    ///   "keepAlive": "interval", "keepAliveIntervalMs": 12000,  // do not use "off",
+    ///                                                            // raised to 12000 if lower
     ///   "httpServer": { "enabled": false, "host": "127.0.0.1", "port": 8545 },
     ///   "maxInFlight": 64, "autoStart": false
     /// }
