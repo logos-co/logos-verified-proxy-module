@@ -197,8 +197,9 @@ Neither is validated upstream. Everything else — bad JSON, a missing
 
 `processVerifProxyTasks` only advances chronos while a call is in flight, so an
 **idle proxy does not advance its light client at all**. The heartbeat
-(`keepAlive: "interval"`, the default) issues `eth_syncing` and `eth_blockNumber`,
-which drive the sync loop and touch no execution backend.
+(`keepAlive: "interval"`, the default) issues
+`eth_getBlockByNumber("latest", false)` once per beat, which drives the sync
+loop like every frontend method except `eth_chainId`.
 
 Measured on sepolia over a 5-minute idle:
 
@@ -229,15 +230,33 @@ REST API and hand it back to the processor, which discards it as `Duplicate`.
 One fetch per slot is all the chain can answer; the rest is traffic against a
 typically free public endpoint, and allocation churn in the library's heap.
 
-Both probes go out on every beat, head probe first. That is not two round
-trips: they serialise on the same sync lock, so whichever runs first pays for
-the light-client round and the second finds `isSynced()` true and skips it. One
-sync round per beat, and a head that is never more than one slot old.
-
 The cost of the floor is detection latency — three consecutive heartbeat
 failures now take three slots (~36 s) to degrade the proxy rather than ~3 s.
 Three failures in 3 s were three failures of the *same* slot's fetch; three
 slots apart is a light client that is genuinely stuck.
+
+### What the beat is, and why it is that call
+
+`eth_getBlockByNumber("latest", false)`, on the library author's
+recommendation. It is one call per beat and it earns the round trip four times
+over:
+
+* It drives `beaconSync()`, which is what keeps chronos turning at all.
+* It exercises the **whole** path a user call takes — beacon sync, header
+  store, an execution backend, and verifying the block against the verified
+  header. The `eth_syncing` it replaces returned a hardcoded `false` and
+  stopped at `beaconSync()`, so two minutes of `No eligible backend for
+  capability` could pass with `status()` still reporting `running` while every
+  user call failed. That is what happened in [#11].
+* It answers with the head, so the separate `eth_blockNumber` probe is gone.
+* `selectBackend()` decays negative scores toward 0 only when it is *called*,
+  so a beat that reaches an execution backend is also what lets a penalised
+  backend recover while the module is otherwise idle.
+
+The cost is one execution request per slot, and a failing beat now penalises
+the backend through `penaltyOr` — which is the point rather than a side effect.
+At one beat per slot that is affordable; at the old 1000 ms it would not have
+been.
 
 ## Pump behaviour, measured
 
@@ -300,9 +319,9 @@ single `eth_blockNumber` in that run took **12.6 s**, against a 30 s default
 * Sync observability is limited: there is no exported getter for the
   finalized/optimistic slot. `status().state == "degraded"` means "up, but
   heartbeats are failing", inferred from their error strings — three
-  consecutive failures degrade, one success clears it. `status().head` is
-  refreshed by a separate `eth_blockNumber` probe on every heartbeat, because
-  `eth_syncing` answers a hardcoded `false` and cannot report it.
+  consecutive failures degrade, one success clears it. `status().head` comes
+  out of the beat itself — `eth_getBlockByNumber("latest")` answers with the
+  block it just verified.
 * **A fault in the library's heap takes the host process with it.** Everything
   the library allocates lives in a Nim `--mm:refc` heap the module cannot
   inspect, guard or recover from, and it runs in-process. [#11] recorded a
@@ -313,9 +332,11 @@ single `eth_blockNumber` in that run took **12.6 s**, against a 30 s default
   several per slot to one, but it does not fix the underlying fault, and no
   module-side change can: by the time the collector faults the heap is already
   corrupt. A crashed module reports `The Verified Proxy module stopped
-  unexpectedly` and needs a restart.
+  unexpectedly` and needs a restart. Reported upstream as
+  [status-im/nimbus-eth1#4813][upstream-gc].
 
   [#11]: https://github.com/logos-co/logos-verified-proxy-module/issues/11
+  [upstream-gc]: https://github.com/status-im/nimbus-eth1/issues/4813
 * `fetchFinalizedRoot()` exists because Basecamp sandboxes `ui_qml` plugins
   away from the network entirely — an `XMLHttpRequest` from a panel is refused
   with *"sandboxed ui_qml modules may not use the network"* — so a UI that

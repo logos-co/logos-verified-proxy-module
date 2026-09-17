@@ -633,11 +633,13 @@ LOGOS_TEST(runtime_pump_does_not_busy_spin_while_idle) {
     LOGOS_ASSERT_LT(pumps, 100);
 }
 
-LOGOS_TEST(runtime_heartbeat_issues_eth_syncing_only_when_enabled) {
+LOGOS_TEST(runtime_heartbeat_issues_the_beat_only_when_enabled) {
     // processVerifProxyTasks only poll()s while pendingCalls > 0, so an idle
-    // proxy does not advance its light client at all. eth_syncing is the
-    // cheapest keep-alive: it drives beaconSync() and touches no execution
-    // backend.
+    // proxy does not advance its light client at all. The beat is
+    // eth_getBlockByNumber("latest"): it drives beaconSync() like every
+    // frontend method except eth_chainId, and unlike the eth_syncing it
+    // replaced it also reaches an execution backend and verifies the block, so
+    // a backend that has gone ineligible shows up in status().
     {
         auto t = LogosTestContext("verified_proxy_module");
         mockReset();
@@ -649,7 +651,11 @@ LOGOS_TEST(runtime_heartbeat_issues_eth_syncing_only_when_enabled) {
         LOGOS_ASSERT_TRUE(rt.start(cfg).success);
         std::this_thread::sleep_for(milliseconds(600));
         rt.stop();
-        LOGOS_ASSERT_GT(t.cFunctionCallCount("proxyCall:eth_syncing"), 1);
+        LOGOS_ASSERT_GT(t.cFunctionCallCount("proxyCall:eth_getBlockByNumber"), 1);
+        // One call per beat, not two: the beat answers with the head, so the
+        // separate eth_blockNumber probe is gone.
+        LOGOS_ASSERT_EQ(t.cFunctionCallCount("proxyCall:eth_blockNumber"), 0);
+        LOGOS_ASSERT_EQ(t.cFunctionCallCount("proxyCall:eth_syncing"), 0);
     }
     {
         auto t = LogosTestContext("verified_proxy_module");
@@ -658,19 +664,18 @@ LOGOS_TEST(runtime_heartbeat_issues_eth_syncing_only_when_enabled) {
         LOGOS_ASSERT_TRUE(rt.start(testConfig()).success);   // keepAlive "off"
         std::this_thread::sleep_for(milliseconds(400));
         rt.stop();
-        LOGOS_ASSERT_EQ(t.cFunctionCallCount("proxyCall:eth_syncing"), 0);
+        LOGOS_ASSERT_EQ(t.cFunctionCallCount("proxyCall:eth_getBlockByNumber"), 0);
     }
 }
 
-LOGOS_TEST(runtime_head_probe_records_the_block_number) {
-    // The heartbeat cannot report the head — upstream's eth_syncing answers a
-    // hardcoded `false` — so a separate eth_blockNumber probe populates it.
-    // Before this was wired, status().head.blockNumber was a field that was
-    // read and never assigned, so it stayed "" for the life of the process.
+LOGOS_TEST(runtime_the_beat_records_the_head_it_verified) {
+    // The head comes out of the beat itself now. Before any of this was wired,
+    // status().head.blockNumber was a field that was read and never assigned,
+    // so it stayed "" for the life of the process.
     auto t = LogosTestContext("verified_proxy_module");
     mockReset();
-    // The wire format the library actually emits: a hex QUANTITY string.
-    t.mockCFunction("proxyCall").returns("\"0xb0947c\"");
+    // The wire shape: a block OBJECT whose `number` is a hex quantity string.
+    t.mockCFunction("proxyCall").returns(R"({"number":"0xb0947c","hash":"0xabc"})");
 
     ProxyConfig cfg = testConfig();
     cfg.keepAlive = "interval";
@@ -685,21 +690,19 @@ LOGOS_TEST(runtime_head_probe_records_the_block_number) {
     rt.stop();
     LOGOS_ASSERT_TRUE(got);
 
-    LOGOS_ASSERT_GT(t.cFunctionCallCount("proxyCall:eth_blockNumber"), 0);
+    LOGOS_ASSERT_GT(t.cFunctionCallCount("proxyCall:eth_getBlockByNumber"), 0);
     LOGOS_ASSERT_EQ(s["head"]["blockNumber"].get<std::string>(), std::string("0xb0947c"));
     LOGOS_ASSERT_GT(s["head"]["updatedAt"].get<int64_t>(), 0);
 }
 
-LOGOS_TEST(runtime_probes_the_head_on_every_beat) {
-    // It used to be every fifth beat, to avoid "multiplying execution-backend
-    // traffic". That premise was wrong: upstream's eth_blockNumber answers from
-    // the LOCAL headerStore and touches no execution backend, and it opens with
-    // the same beaconSync() the heartbeat does — so the two serialise on the
-    // engine's sync lock and share ONE light-client round per beat. Probing
-    // every beat is therefore free, and with the beat now a whole slot long,
-    // every fifth would have left the head a minute stale.
+LOGOS_TEST(runtime_the_head_is_refreshed_on_every_beat) {
+    // The head used to come from a separate probe issued every FIFTH beat.
+    // With the beat floored at a whole slot that would leave head.updatedAt a
+    // minute stale, which is exactly where eth_rpc's readiness gate
+    // (HEAD_STALE_SECS = 60) calls the proxy "not tracking".
     auto t = LogosTestContext("verified_proxy_module");
     mockReset();
+    t.mockCFunction("proxyCall").returns(R"({"number":"0xb0947c"})");
 
     ProxyConfig cfg = testConfig();
     cfg.keepAlive = "interval";
@@ -707,20 +710,21 @@ LOGOS_TEST(runtime_probes_the_head_on_every_beat) {
 
     ProxyRuntime rt(nullptr);
     LOGOS_ASSERT_TRUE(rt.start(cfg).success);
-    const bool beat = spinUntil(
-        [&] { return t.cFunctionCallCount("proxyCall:eth_syncing") >= 4; });
-    const int beats  = t.cFunctionCallCount("proxyCall:eth_syncing");
-    const int probes = t.cFunctionCallCount("proxyCall:eth_blockNumber");
+    const bool beat = spinUntil([&] {
+        return t.cFunctionCallCount("proxyCall:eth_getBlockByNumber") >= 4
+            && rt.statusSnapshot()["head"]["updatedAt"].get<int64_t>() > 0;
+    });
+    const int64_t first = rt.statusSnapshot()["head"]["updatedAt"].get<int64_t>();
+    const int beats = t.cFunctionCallCount("proxyCall:eth_getBlockByNumber");
     rt.stop();
 
     LOGOS_ASSERT_TRUE(beat);
-    // One probe per beat. The probe is issued FIRST, so it may lead by one.
-    LOGOS_ASSERT_GE(probes, beats);
-    LOGOS_ASSERT_LE(probes, beats + 1);
+    LOGOS_ASSERT_GE(beats, 4);
+    LOGOS_ASSERT_GT(first, static_cast<int64_t>(0));
 }
 
 LOGOS_TEST(runtime_pending_slots_stay_bounded_across_many_beats) {
-    // Every beat used to append two weak_ptrs to m_pending that nothing removed
+    // Every beat used to append weak_ptrs to m_pending that nothing removed
     // before teardown. make_shared puts the CallSlot's storage in the same
     // block as its control block, so a weak_ptr keeps a mutex, a condvar and
     // three strings alive — at the 1s beat of issue #11, thousands of them per
@@ -735,13 +739,13 @@ LOGOS_TEST(runtime_pending_slots_stay_bounded_across_many_beats) {
     ProxyRuntime rt(nullptr);
     LOGOS_ASSERT_TRUE(rt.start(cfg).success);
     const bool beat = spinUntil(
-        [&] { return t.cFunctionCallCount("proxyCall:eth_syncing") >= 25; });
+        [&] { return t.cFunctionCallCount("proxyCall:eth_getBlockByNumber") >= 25; });
     const json s = rt.statusSnapshot();
     rt.stop();
 
     LOGOS_ASSERT_TRUE(beat);
-    // 25 beats is 50 slots issued. Anything near that is the old behaviour;
-    // a handful is the live ones plus whatever has not been walked off yet.
+    // Anything near 25 is the old behaviour; a handful is the live ones plus
+    // whatever has not been walked off the front yet.
     LOGOS_ASSERT_LT(s["counters"]["pendingSlots"].get<int64_t>(), static_cast<int64_t>(16));
 }
 
@@ -788,7 +792,8 @@ LOGOS_TEST(runtime_a_healthy_heartbeat_leaves_state_running) {
     LOGOS_ASSERT_TRUE(rt.start(cfg).success);
     // Wait for real beats rather than a fixed nap, so "still running" is a
     // statement about many successful heartbeats and not about a short sleep.
-    const bool beat = spinUntil([&] { return t.cFunctionCallCount("proxyCall:eth_syncing") >= 5; });
+    const bool beat = spinUntil(
+        [&] { return t.cFunctionCallCount("proxyCall:eth_getBlockByNumber") >= 5; });
     const json s = rt.statusSnapshot();
     rt.stop();
 
@@ -865,7 +870,7 @@ LOGOS_TEST(runtime_restart_does_not_inherit_the_previous_runs_head) {
     // switched network, and started again.
     auto t = LogosTestContext("verified_proxy_module");
     mockReset();
-    t.mockCFunction("proxyCall").returns("\"0xb0947c\"");
+    t.mockCFunction("proxyCall").returns(R"({"number":"0xb0947c"})");
 
     ProxyConfig cfg = testConfig();
     cfg.keepAlive = "interval";
