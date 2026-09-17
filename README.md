@@ -149,8 +149,9 @@ the library's JSON config — that is a CLI-only option on the standalone binary
 Module-side knobs: `callTimeoutMs` (30000), `queueTimeoutMs` (30000),
 `startTimeoutMs` (120000), `drainTimeoutMs` (2000 — a polling bound, see below),
 `pumpIntervalMs` (50), `maxInFlight` (64), `httpServer` (see above),
-`keepAlive` (`off` | `interval` | `continuous`), `keepAliveIntervalMs` (1000),
-`autoStart` (false). Upstream tuning lives under `tuning`.
+`keepAlive` (`off` | `interval` | `continuous`), `keepAliveIntervalMs` (12000,
+floored at one beacon slot — see below), `autoStart` (false). Upstream tuning
+lives under `tuning`.
 
 `maxInFlight` is an operator ceiling, not a promise that 64 calls can run at
 once. Calls above the active ceiling wait in FIFO order for up to
@@ -196,8 +197,8 @@ Neither is validated upstream. Everything else — bad JSON, a missing
 
 `processVerifProxyTasks` only advances chronos while a call is in flight, so an
 **idle proxy does not advance its light client at all**. The heartbeat
-(`keepAlive: "interval"`, the default) issues `eth_syncing`, which drives the
-sync loop and touches no execution backend.
+(`keepAlive: "interval"`, the default) issues `eth_syncing` and `eth_blockNumber`,
+which drive the sync loop and touch no execution backend.
 
 Measured on sepolia over a 5-minute idle:
 
@@ -211,6 +212,32 @@ Measured on sepolia over a 5-minute idle:
 `"off"` does not merely go stale: the reported head **regresses**, so a consumer
 polling block numbers sees time run backwards. Treat it as a diagnostic
 setting, not a deployment option.
+
+### ...but it must not beat faster than the chain
+
+`keepAliveIntervalMs` is **raised to one beacon slot (12 s) if it is set
+lower**, and the raised value is what `getConfig()` reports back.
+
+Every frontend method except `eth_chainId` opens with the engine's
+`beaconSync()`, which takes one async lock and runs a full `syncOnce()` whenever
+`isSynced()` is false — and `isSynced()` is `optimisticSlot + 1 >= currentSlot`,
+so it is slot-granular. `isSynced()` goes false at the top of each slot and
+back to true once the beacon node publishes that slot's optimistic update, a
+few seconds in — so at the 1000 ms this module used to default to, the four or
+five beats inside that window each re-fetch the same update over the beacon
+REST API and hand it back to the processor, which discards it as `Duplicate`.
+One fetch per slot is all the chain can answer; the rest is traffic against a
+typically free public endpoint, and allocation churn in the library's heap.
+
+Both probes go out on every beat, head probe first. That is not two round
+trips: they serialise on the same sync lock, so whichever runs first pays for
+the light-client round and the second finds `isSynced()` true and skips it. One
+sync round per beat, and a head that is never more than one slot old.
+
+The cost of the floor is detection latency — three consecutive heartbeat
+failures now take three slots (~36 s) to degrade the proxy rather than ~3 s.
+Three failures in 3 s were three failures of the *same* slot's fetch; three
+slots apart is a light client that is genuinely stuck.
 
 ## Pump behaviour, measured
 
@@ -274,8 +301,21 @@ single `eth_blockNumber` in that run took **12.6 s**, against a 30 s default
   finalized/optimistic slot. `status().state == "degraded"` means "up, but
   heartbeats are failing", inferred from their error strings — three
   consecutive failures degrade, one success clears it. `status().head` is
-  refreshed by a separate `eth_blockNumber` probe every fifth heartbeat,
-  because `eth_syncing` answers a hardcoded `false` and cannot report it.
+  refreshed by a separate `eth_blockNumber` probe on every heartbeat, because
+  `eth_syncing` answers a hardcoded `false` and cannot report it.
+* **A fault in the library's heap takes the host process with it.** Everything
+  the library allocates lives in a Nim `--mm:refc` heap the module cannot
+  inspect, guard or recover from, and it runs in-process. [#11] recorded a
+  `SIGSEGV` inside that GC's cycle collector — `markS` under `collectCycles`,
+  reached from an ordinary allocation for a beacon REST request — after 90
+  minutes of mainnet uptime with a 1 s heartbeat. The floor on
+  `keepAliveIntervalMs` cuts the light-client sync rounds behind that churn from
+  several per slot to one, but it does not fix the underlying fault, and no
+  module-side change can: by the time the collector faults the heap is already
+  corrupt. A crashed module reports `The Verified Proxy module stopped
+  unexpectedly` and needs a restart.
+
+  [#11]: https://github.com/logos-co/logos-verified-proxy-module/issues/11
 * `fetchFinalizedRoot()` exists because Basecamp sandboxes `ui_qml` plugins
   away from the network entirely — an `XMLHttpRequest` from a panel is refused
   with *"sandboxed ui_qml modules may not use the network"* — so a UI that
