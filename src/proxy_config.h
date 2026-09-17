@@ -116,16 +116,17 @@ struct ProxyConfig {
     /// How often the heartbeat runs. CLAMPED UP to `kBeaconSlotMs` by
     /// fromJson(), and the clamped value is what getConfig() reports back.
     ///
-    /// Every frontend method except `eth_chainId` opens with `beaconSync()`,
-    /// which takes the engine's sync lock and runs a full `syncOnce()` whenever
-    /// `isSynced()` is false — and `isSynced()` is `optimisticSlot + 1 >=
-    /// currentSlot`, i.e. slot-granular. It goes false at the top of each slot
-    /// and back to true once the beacon node publishes that slot's optimistic
-    /// update, a few seconds in, so at the 1000ms this used to default to the
-    /// four or five beats inside that window each re-fetch the same update and
-    /// hand it back to the processor, which discards it as `Duplicate`. One
-    /// fetch per slot is all the chain can answer; the rest is traffic against
-    /// the beacon endpoint and churn in the library's Nim heap.
+    /// The beat opens with `beaconSync()` — every frontend method except
+    /// `eth_chainId` does — which takes the engine's sync lock and runs a full
+    /// `syncOnce()` whenever `isSynced()` is false. And `isSynced()` is
+    /// `optimisticSlot + 1 >= currentSlot`, i.e. slot-granular: it goes false
+    /// at the top of each slot and back to true once the beacon node publishes
+    /// that slot's optimistic update, a few seconds in. So at the 1000ms this
+    /// used to default to, the four or five beats inside that window each
+    /// re-fetch the same update and hand it back to the processor, which
+    /// discards it as `Duplicate`. One fetch per slot is all the chain can
+    /// answer; the rest is traffic against the beacon endpoint, one execution
+    /// request each, and churn in the library's Nim heap.
     int64_t keepAliveIntervalMs = kBeaconSlotMs;
     bool autoStart = false;
 

@@ -40,10 +40,10 @@ struct CallSlot {
     std::string params;
 
     // What the completion means. A User call has a waiter blocked on `cv`;
-    // the other two are fire-and-forget and are the ONLY way the runtime
-    // learns anything about proxy health, since the library exposes no getter
-    // for light-client progress.
-    enum class Kind { User, Heartbeat, HeadProbe };
+    // a Heartbeat is fire-and-forget and is the ONLY way the runtime learns
+    // anything about proxy health, since the library exposes no getter for
+    // light-client progress.
+    enum class Kind { User, Heartbeat };
     Kind kind = Kind::User;
 };
 
@@ -134,9 +134,8 @@ private:
     /// C callback. Runs on the proxy thread; must never let an exception
     /// escape into Nim frames.
     static void callbackTrampoline(Context* ctx, int status, char* result, void* userData);
-    void issueHeadProbe();
     void noteHeartbeat(const CallSlot& slot);
-    void noteHeadProbe(const CallSlot& slot);
+    void noteHead(const CallSlot& slot);
     void noteFinished(uint64_t id, bool ok);
     void recordPump(int64_t ms, bool busy);
     AdmissionBlock admissionBlockLocked(std::string& error);

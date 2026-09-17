@@ -400,19 +400,6 @@ void ProxyRuntime::runOnce() {
 
         if (m_inFlight.load() == 0 && keepAliveEnabled()
             && steady_clock::now() >= nextKeepAlive) {
-            // Ask for the head on EVERY beat, head probe first. The heartbeat
-            // cannot report it — eth_syncing answers a hardcoded `false` — and
-            // the probe is not the extra round trip it looks like: both methods
-            // open with the engine's beaconSync(), which serialises them on one
-            // async lock, so whichever runs first pays for the light-client
-            // sync and the second finds isSynced() true and skips it. The
-            // number itself comes from the LOCAL headerStore, not from an
-            // execution backend. One sync round per beat either way, and a head
-            // that is never more than one slot old — which consumers depend on:
-            // eth_rpc's readiness gate calls the proxy "not tracking" once
-            // head.updatedAt is 60s behind the snapshot's own clock, so with the
-            // beat floored at a slot, an every-Nth-beat probe would trip it.
-            issueHeadProbe();
             issueKeepAlive();
             nextKeepAlive = steady_clock::now() + milliseconds(m_cfg.keepAliveIntervalMs);
         }
@@ -612,7 +599,6 @@ void ProxyRuntime::callbackTrampoline(Context*, int status, char* result, void* 
         }
         switch (slot->kind) {
             case CallSlot::Kind::Heartbeat: box->rt->noteHeartbeat(*slot); break;
-            case CallSlot::Kind::HeadProbe: box->rt->noteHeadProbe(*slot); break;
             case CallSlot::Kind::User:      break;
         }
         box->rt->noteFinished(slot->id, status == RET_SUCCESS);
@@ -810,19 +796,38 @@ void ProxyRuntime::issueKeepAlive() {
     std::string ignored;
     if (!tryAdmit(ignored)) return;
 
-    // eth_syncing is the cheapest possible keep-alive: its frontend runs
-    // engine.beaconSync() and touches no execution backend, and issuing it
-    // bumps ctx.pendingCalls so processVerifProxyTasks actually poll()s. Its
-    // RETURN value is a hardcoded `false` and useless; its ERROR string is the
-    // only machine-readable sync-health signal the C ABI exposes.
+    // eth_getBlockByNumber("latest") — on the library author's recommendation,
+    // and it is the only beat that is worth the round trip:
     //
-    // Reached through proxyCall rather than a hand-declared extern: eth_syncing
-    // is exported by c_frontend.nim but absent from verifproxy.h, so declaring
-    // it ourselves would risk a link failure against another build.
+    //  * it drives the sync, like every frontend method except eth_chainId: it
+    //    opens with engine.beaconSync(), which runs syncOnce() when the light
+    //    client is behind. That is what keeps chronos turning, since
+    //    processVerifProxyTasks only poll()s while a call is in flight.
+    //  * it exercises the WHOLE path a user call takes — beacon sync, header
+    //    store, an execution backend, and verifying the block against the
+    //    verified header. eth_syncing, the old beat, returned a hardcoded
+    //    `false` and stopped at beaconSync(), so the two minutes of "No
+    //    eligible backend for capability" in #11 never reached status(): the
+    //    module reported `running` while every user call was failing.
+    //  * it answers with the head, so there is no second probe to issue.
+    //  * selectBackend() decays negative scores toward 0 only when it is
+    //    CALLED, so a beat that reaches an execution backend is also what lets
+    //    a penalised one recover while the module is otherwise idle.
+    //
+    // The cost is one execution request per beat, and a failing beat now
+    // penalises the backend through penaltyOr — which is the point, not a side
+    // effect. At one beat per slot that is affordable; it would not be at the
+    // 1000ms this used to run at.
+    //
+    // Reached through proxyCall rather than a hand-declared extern, like every
+    // other call here, so the module cannot break its link against a build
+    // whose exported set differs.
     auto slot = std::make_shared<CallSlot>();
     slot->id = m_nextId.fetch_add(1, std::memory_order_relaxed);
-    slot->method = "eth_syncing";
-    slot->params = "[]";
+    slot->method = "eth_getBlockByNumber";
+    // Tag plus fullTransactions=false: the header is all the beat reads, and a
+    // full transaction list would be a much larger payload to decode per slot.
+    slot->params = R"(["latest",false])";
     slot->kind = CallSlot::Kind::Heartbeat;
 
     auto* box = new CallBox{ slot, this };
@@ -831,32 +836,7 @@ void ProxyRuntime::issueKeepAlive() {
                 &ProxyRuntime::callbackTrampoline, box);
 
     // Fire and forget; the outcome is observed on a later pump turn by
-    // pollHeartbeat(). Recording the slot lets shutdown release it.
-    std::lock_guard<std::mutex> lk(m_mu);
-    prunePendingLocked();
-    m_pending.push_back(slot);
-}
-
-// The heartbeat's own return value is a hardcoded `false` and tells us nothing
-// about the head, so a separate, less frequent probe asks for the block number
-// outright. Same fire-and-forget shape; observed in noteHeadProbe().
-void ProxyRuntime::issueHeadProbe() {
-    assert(std::this_thread::get_id() == m_threadId);
-
-    std::string ignored;
-    if (!tryAdmit(ignored)) return;
-
-    auto slot = std::make_shared<CallSlot>();
-    slot->id = m_nextId.fetch_add(1, std::memory_order_relaxed);
-    slot->method = "eth_blockNumber";
-    slot->params = "[]";
-    slot->kind = CallSlot::Kind::HeadProbe;
-
-    auto* box = new CallBox{ slot, this };
-    m_inFlight.fetch_add(1, std::memory_order_acq_rel);
-    ::proxyCall(m_ctx, slot->method.data(), slot->params.data(),
-                &ProxyRuntime::callbackTrampoline, box);
-
+    // noteHeartbeat(). Recording the slot lets shutdown release it.
     std::lock_guard<std::mutex> lk(m_mu);
     prunePendingLocked();
     m_pending.push_back(slot);
@@ -864,14 +844,15 @@ void ProxyRuntime::issueHeadProbe() {
 
 // Consecutive heartbeat failures are the only sync-health signal the C ABI
 // offers: the error STRING is machine-readable ("UnavailableDataError: trusted
-// block root not set", "VerificationError: unviable fork"), the return value is
-// not. Three in a row is deliberately more than one blip and less than a long
-// outage.
+// block root not set", "No eligible backend for capability: GetBlockByNumber"),
+// the return value is not. Three in a row is deliberately more than one blip
+// and less than a long outage.
 void ProxyRuntime::noteHeartbeat(const CallSlot& slot) {
     static constexpr int64_t kDegradeAfter = 3;
 
     if (slot.status == RET_SUCCESS) {
         m_heartbeatStreak.store(0, std::memory_order_relaxed);
+        noteHead(slot);
         // Only climb back out of Degraded — never overwrite Draining/Stopped,
         // which a concurrent stop() may have just set.
         if (m_state.load() == State::Degraded) setState(State::Running);
@@ -884,14 +865,17 @@ void ProxyRuntime::noteHeartbeat(const CallSlot& slot) {
         setState(State::Degraded, errorMessage(slot.status, slot.result));
 }
 
-void ProxyRuntime::noteHeadProbe(const CallSlot& slot) {
-    if (slot.status != RET_SUCCESS) return;
-
+// The head the beat just verified. `number` is a hex QUANTITY string inside the
+// block object; anything else means the wire shape moved and the old value is
+// better than a wrong one, so leave it alone rather than clearing it.
+void ProxyRuntime::noteHead(const CallSlot& slot) {
     bool wasJson = false;
     const json v = decodePayload(slot.result, wasJson);
+    if (!v.is_object()) return;
 
-    if (!v.is_string()) return;
-    const std::string hex = v.get<std::string>();
+    const auto it = v.find("number");
+    if (it == v.end() || !it->is_string()) return;
+    const std::string hex = it->get<std::string>();
     if (hex.empty()) return;
 
     std::lock_guard<std::mutex> lk(m_errMu);
