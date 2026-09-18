@@ -327,13 +327,11 @@ single `eth_blockNumber` in that run took **12.6 s**, against a 30 s default
   inspect, guard or recover from, and it runs in-process. [#11] recorded a
   `SIGSEGV` inside that GC's cycle collector — `markS` under `collectCycles`,
   reached from an ordinary allocation for a beacon REST request — after 90
-  minutes of mainnet uptime with a 1 s heartbeat. The floor on
-  `keepAliveIntervalMs` cuts the light-client sync rounds behind that churn from
-  several per slot to one, but it does not fix the underlying fault, and no
-  module-side change can: by the time the collector faults the heap is already
-  corrupt. A crashed module reports `The Verified Proxy module stopped
-  unexpectedly` and needs a restart. Reported upstream as
-  [status-im/nimbus-eth1#4813][upstream-gc].
+  minutes of mainnet uptime with a 1 s heartbeat. A crashed module reports
+  `The Verified Proxy module stopped unexpectedly` and needs a restart. The
+  likely cause was the compiler rather than the load, and the library is no
+  longer built with it: see [Which Nim builds the library](#which-nim-builds-the-library).
+  Reported upstream as [status-im/nimbus-eth1#4813][upstream-gc].
 
   [#11]: https://github.com/logos-co/logos-verified-proxy-module/issues/11
   [upstream-gc]: https://github.com/status-im/nimbus-eth1/issues/4813
@@ -363,6 +361,36 @@ which is why it is a separate workflow from CI.
 nix run github:logos-co/logos-doctest -- run doctests/verified-proxy-runtime.test.yaml --verbose
 ```
 
+## Which Nim builds the library
+
+Nim 2.2.12 — the compiler nimbus-eth1 builds itself with, from the pinned rev's
+`vendor/nimbus-build-system` submodule. nimbus-eth1's own `flake.lock` still
+locks nimbus-build-system at 2.2.10 — the submodule moved in
+[nimbus-eth1#4761][nimbus-4761] and the lock did not follow — so taking the
+compiler from that flake builds with 2.2.10. This flake builds it from the
+submodule instead, so a nimbus bump that moves Nim moves it here too.
+
+2.2.10 corrupts the refc heap. It resets a case object by zeroing only the
+active branch ([nim-lang/Nim#25992][nim-25992]), leaving stale bytes in the rest
+of the union for the GC to read as a pointer — and nim-results' `Result` is a
+case object. With Nim's GC assertions on (`-d:useGcAssert -d:useSysAssert`) and the
+library driven the way this module drives it, against mainnet:
+
+| compiler | outcome |
+|---|---|
+| 2.2.10 | `[GCASSERT] decRef: interiorPtr` in `rpcCallEvm`, on the first `eth_call` — 7 runs of 7 (x86_64-linux and aarch64-darwin), 14–32 s in |
+| 2.2.10 + only the #25992 fix | clean, `eth_call`s included |
+| 2.2.12 | clean under the [#11] load: a 1 s beat, a receipt polled for a transaction that never lands, `eth_call` |
+
+[#11]'s log shows `eth_call`'s capability (`CreateAccessList`) in use, so this
+is the most likely cause of that crash — though a silent corruption cannot be
+tied to one fault after the fact. To see which compiler built an archive:
+`strings -a result/lib/libverifproxy.a | grep -om1 'nbs-nim-[0-9.]*'`
+(`nim-unwrapped-[0-9.]*` on Windows).
+
+[nimbus-4761]: https://github.com/status-im/nimbus-eth1/pull/4761
+[nim-25992]: https://github.com/nim-lang/Nim/issues/25992
+
 ## Windows
 
 ```bash
@@ -382,18 +410,17 @@ Four things had to be settled to get there, and none of them is the cross
 toolchain — the mingw stdenv, the `ar` shim `--app:staticlib` needs, and the
 vendored nat-libs all work as written above.
 
-**The compiler version.** `USE_SYSTEM_NIM=1` substitutes the nixpkgs Nim for
-the one nimbus-build-system pins, and nimbus-eth2's beacon-chain sources need
-2.2.10 — on 2.2.4 the tree stops at `state_transition_block.nim` with
-`invalid type: 'typeof(SomeBeaconBlockBody)'`. Fixed in `logos-nix`, which
-overlays Nim 2.2.10 into `mkWindowsPkgs` (`nix/windows/nim-overlay.nix`). It
-could not be fixed here: in a cross set the build-side compiler is a *wrapper*
-carrying the mingw toolchain configuration, a plain `nixpkgs#nim` knows nothing
-about the target, and `wrapNim` is reachable only as
-`nim-2_2.passthru.wrapNim`, so the wrapper cannot be rebuilt from an overridden
-compiler outside the package set. Dropping `USE_SYSTEM_NIM=1` instead is no
-help either: nimbus-build-system then fetches Nim over the network, which the
-sandbox forbids.
+**The compiler version.** `USE_SYSTEM_NIM=1` substitutes a nix-built Nim for
+the one nimbus-build-system would otherwise fetch over the network, which the
+sandbox forbids. In a cross set that compiler has to be the nixpkgs *wrapper*
+carrying the mingw toolchain configuration, so the one the other platforms
+build from nimbus' submodule cannot be used as-is. nixpkgs' own 2.2.4 is too
+old — nimbus-eth2's beacon-chain sources stop at `state_transition_block.nim`
+with `invalid type: 'typeof(SomeBeaconBlockBody)'` — so `logos-nix` overlays
+Nim 2.2.10 into `mkWindowsPkgs` (`nix/windows/nim-overlay.nix`), and this flake
+re-wraps that compiler at the submodule's version with
+`nim-2_2.override { nim-unwrapped-2_2 = …; }`. The tarball hash is pinned, so
+a nimbus bump that moves Nim fails that fetch until it is updated.
 
 **mcl assumes llvm-mingw.** `vendor/nim-mcl`'s `when defined(windows)` branch
 feeds `src/base64.ll` — LLVM IR — to `$CC`. GCC answers `linker input file

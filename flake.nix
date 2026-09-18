@@ -34,10 +34,34 @@
         then logos-nix.lib.mkWindowsPkgs { buildSystem = "x86_64-linux"; }
         else import nixpkgs { inherit system; };
 
+      # nimbus-eth1's flake.lock still pins nimbus-build-system at Nim 2.2.10, while
+      # the submodule its Makefile builds with moved to 2.2.12 (nimbus-eth1#4761),
+      # which fixes refc heap corruption (nim-lang/Nim#25992). Build from the submodule.
+      nbs = "${nimbus-eth1}/vendor/nimbus-build-system";
+      nimFor = system: nimbus-eth1.inputs.nixpkgs.legacyPackages.${system}.callPackage
+        "${nbs}/nix/default.nix" { src = nbs; };
+
       libverifproxyFor = system:
         let
           pkgs = pkgsFor system;
           isWin = system == "x86_64-windows";
+
+          # logos-nix pins the Windows Nim at 2.2.10; re-wrap the same compiler at
+          # the submodule's version. A nimbus bump that moves Nim fails this fetch.
+          nimWin =
+            let
+              wrapped = pkgs.buildPackages.nim-2_2;
+              version = pkgs.callPackage "${nbs}/nix/version.nix" { };
+            in
+            wrapped.override {
+              nim-unwrapped-2_2 = wrapped.nim.overrideAttrs (_: {
+                inherit version;
+                src = pkgs.fetchurl {
+                  url = "https://nim-lang.org/download/nim-${version}.tar.xz";
+                  hash = "sha256-Jjmgal6np/z1ffHn4e9NGyvuWMesm9ANvSqlvqHlpWo=";
+                };
+              });
+            };
 
           # Windows cannot go through nimbus' own flake: it does
           # `import nixpkgs { system = "x86_64-windows"; }`, which yields a
@@ -54,12 +78,13 @@
                 # USE_SYSTEM_NIM=1 wants a BUILD-side Nim; pkgs.nim here is a PE.
                 # Under that cross wrapper nimscript's `defined(windows)` is
                 # already true, so no --os:windows has to be passed by hand.
-                nim = pkgs.buildPackages.nim-2_2;
+                nim = nimWin;
                 targets = [ "libverifproxy" ];
               }
             else
               nimbus-eth1.packages.${system}.nimbus_verified_proxy.override {
                 targets = [ "libverifproxy" ];
+                nim = nimFor system;
               };
         in
         base.overrideAttrs (old: {
