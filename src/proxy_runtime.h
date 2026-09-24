@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
@@ -40,10 +41,10 @@ struct CallSlot {
     std::string params;
 
     // What the completion means. A User call has a waiter blocked on `cv`;
-    // a Heartbeat is fire-and-forget and is the ONLY way the runtime learns
-    // anything about proxy health, since the library exposes no getter for
-    // light-client progress.
-    enum class Kind { User, Heartbeat };
+    // a Heartbeat is fire-and-forget and probes the whole request path; a
+    // Sync / OpSync is one nvp_eth_sync / nvp_op_sync, which the library no
+    // longer runs on its own (nimbus-eth1#4828).
+    enum class Kind { User, Heartbeat, Sync, OpSync };
     Kind kind = Kind::User;
 };
 
@@ -116,6 +117,11 @@ private:
     void teardown();
     void drainCommands();
     void issueKeepAlive();
+    void advanceSync();
+    void issueSync(CallSlot::Kind kind);
+    void finishSyncCycle(bool ok, const std::string& error);
+    void releaseStart(bool ok, const std::string& error);
+    int64_t readSyncIntervalMs();
     void failAllPending(const std::string& why);
     /// Drop expired entries from m_pending. Call under m_mu, before pushing.
     /// Expired entries leave in issue order, so the front walk is O(1)
@@ -135,6 +141,7 @@ private:
     /// escape into Nim frames.
     static void callbackTrampoline(Context* ctx, int status, char* result, void* userData);
     void noteHeartbeat(const CallSlot& slot);
+    void noteSync(const CallSlot& slot);
     void noteHead(const CallSlot& slot);
     void noteFinished(uint64_t id, bool ok);
     void recordPump(int64_t ms, bool busy);
@@ -148,6 +155,19 @@ private:
     Context* m_ctx = nullptr;
     std::string m_upstreamJson;   // must outlive the startVerifProxy call
     std::thread::id m_threadId;
+
+    // The sync cycle: nvp_eth_sync, then nvp_op_sync when OP is configured.
+    // Completions only record the outcome; the pump acts on it, so nothing
+    // re-enters the library from inside a callback.
+    enum class SyncPhase { Idle, Eth, EthDone, Op, OpDone };
+    SyncPhase m_syncPhase = SyncPhase::Idle;
+    bool m_syncOk = false;
+    std::string m_syncError;
+    std::chrono::steady_clock::time_point m_syncCycleStart{};
+    std::chrono::steady_clock::time_point m_nextSync{};
+    int64_t m_syncIntervalMs = 0;
+    // start() is released by the first good cycle, not by startVerifProxy.
+    bool m_startReleased = false;
 
     // ── shared ───────────────────────────────────────────────────────────
     std::thread m_thread;
@@ -173,6 +193,9 @@ private:
     // Consecutive failures, not the lifetime total: one blip must not latch
     // the proxy into degraded forever.
     std::atomic<int64_t>  m_heartbeatStreak{0};
+    std::atomic<int64_t>  m_syncFailures{0};
+    std::atomic<int64_t>  m_syncStreak{0};
+    std::atomic<int64_t>  m_syncIntervalReported{0};
     std::atomic<int64_t>  m_pumpCalls{0};
     std::atomic<int64_t>  m_pumpMaxMs{0};
     std::atomic<int64_t>  m_pumpIdle[kPumpBuckets]{};
@@ -221,6 +244,8 @@ private:
     std::string m_lastError;
     std::string m_headBlockNumber;
     int64_t m_headUpdatedAt = 0;
+    std::string m_lastSyncError;
+    int64_t m_lastSyncedAt = 0;
     int64_t m_startedAt = 0;
 
     ProxyConfig m_cfg;

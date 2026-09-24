@@ -193,61 +193,47 @@ Neither is validated upstream. Everything else — bad JSON, a missing
 `trustedBlockRoot`, a malformed URL — is already caught and turned into a
 `NULL` return, so validating it here only improves the error message.
 
-## The keep-alive is not optional
+## The module drives the sync
 
-`processVerifProxyTasks` only advances chronos while a call is in flight, so an
-**idle proxy does not advance its light client at all**. The heartbeat
-(`keepAlive: "interval"`, the default) issues
-`eth_getBlockByNumber("latest", false)` once per beat, which drives the sync
-loop like every frontend method except `eth_chainId`.
+Since [status-im/nimbus-eth1#4828](https://github.com/status-im/nimbus-eth1/pull/4828)
+the library never syncs on its own, and requests no longer trigger a sync: every
+call fails with `light client doesn't know the current and next sync
+committees, sync first` until the host has called `nvp_eth_sync`. So the pump
+runs a sync cycle once per `nvp_eth_syncInterval()` (one beacon slot):
+`nvp_eth_sync`, then `nvp_op_sync` when `opExecutionApiUrls` is set, since the
+OP anchor reads L1 headers.
 
-Measured on sepolia over a 5-minute idle:
+* `start()` returns only after the first cycle succeeds. A failing first sync is
+  retried every 2 s until `startTimeoutMs`, and the timeout error carries the
+  last sync error.
+* Three consecutive failed cycles degrade the proxy; one good cycle clears that.
+* `status().sync` reports `intervalMs`, `lastSyncedAt`, `failures`,
+  `consecutiveFailures` and `lastError`.
 
-| | `keepAlive: "off"` | `keepAlive: "continuous"` |
-|---|---|---|
-| head at start | 11532988 | 11532988 |
-| head after 5 min idle | **11532949** — *39 blocks backwards* | 11533012 (+24, tracking) |
-| latency of that call | 3186 ms | 0 ms |
-| light-client headers tracked | 3 | 26 |
+The sync runs whatever `keepAlive` says, so `"off"` no longer lets an idle
+proxy's head go stale or run backwards, as it did before #4828.
 
-`"off"` does not merely go stale: the reported head **regresses**, so a consumer
-polling block numbers sees time run backwards. Treat it as a diagnostic
-setting, not a deployment option.
+## The heartbeat
 
-### ...but it must not beat faster than the chain
-
-`keepAliveIntervalMs` is **raised to one beacon slot (12 s) if it is set
-lower**, and the raised value is what `getConfig()` reports back.
-
-Every frontend method except `eth_chainId` opens with the engine's
-`beaconSync()`, which takes one async lock and runs a full `syncOnce()` whenever
-`isSynced()` is false — and `isSynced()` is `optimisticSlot + 1 >= currentSlot`,
-so it is slot-granular. `isSynced()` goes false at the top of each slot and
-back to true once the beacon node publishes that slot's optimistic update, a
-few seconds in — so at the 1000 ms this module used to default to, the four or
-five beats inside that window each re-fetch the same update over the beacon
-REST API and hand it back to the processor, which discards it as `Duplicate`.
-One fetch per slot is all the chain can answer; the rest is traffic against a
-typically free public endpoint, and allocation churn in the library's heap.
-
-The cost of the floor is detection latency — three consecutive heartbeat
-failures now take three slots (~36 s) to degrade the proxy rather than ~3 s.
-Three failures in 3 s were three failures of the *same* slot's fetch; three
-slots apart is a light client that is genuinely stuck.
+`keepAlive: "interval"` (the default) issues `eth_getBlockByNumber("latest",
+false)` once per beat, after the first sync. `keepAliveIntervalMs` is **raised
+to one beacon slot (12 s) if it is set lower**, and the raised value is what
+`getConfig()` reports back: the verified head moves at most once per slot, so a
+faster beat only adds execution requests. Three consecutive beat failures take
+three slots (~36 s) to degrade the proxy.
 
 ### What the beat is, and why it is that call
 
 `eth_getBlockByNumber("latest", false)`, on the library author's
-recommendation. It is one call per beat and it earns the round trip four times
+recommendation. It is one call per beat and it earns the round trip three times
 over:
 
-* It drives `beaconSync()`, which is what keeps chronos turning at all.
-* It exercises the **whole** path a user call takes — beacon sync, header
+* It exercises the **whole** path a user call takes — the synced check, header
   store, an execution backend, and verifying the block against the verified
-  header. The `eth_syncing` it replaces returned a hardcoded `false` and
-  stopped at `beaconSync()`, so two minutes of `No eligible backend for
-  capability` could pass with `status()` still reporting `running` while every
-  user call failed. That is what happened in [#11].
+  header. The `eth_syncing` it replaces never reached an execution backend, so
+  two minutes of `No eligible backend for capability` could pass with
+  `status()` still reporting `running` while every user call failed. That is
+  what happened in [#11].
 * It answers with the head, so the separate `eth_blockNumber` probe is gone.
 * `selectBackend()` decays negative scores toward 0 only when it is *called*,
   so a beat that reaches an execution backend is also what lets a penalised
@@ -255,8 +241,6 @@ over:
 
 The cost is one execution request per slot, and a failing beat now penalises
 the backend through `penaltyOr` — which is the point rather than a side effect.
-At one beat per slot that is affordable; at the old 1000 ms it would not have
-been.
 
 ## Pump behaviour, measured
 
@@ -318,8 +302,8 @@ single `eth_blockNumber` in that run took **12.6 s**, against a 30 s default
   value reaches a `quit()` before that point.
 * Sync observability is limited: there is no exported getter for the
   finalized/optimistic slot. `status().state == "degraded"` means "up, but
-  heartbeats are failing", inferred from their error strings — three
-  consecutive failures degrade, one success clears it. `status().head` comes
+  sync cycles or heartbeats are failing" — three consecutive failures of
+  either degrade, one success clears it. `status().head` comes
   out of the beat itself — `eth_getBlockByNumber("latest")` answers with the
   block it just verified.
 * **A fault in the library's heap takes the host process with it.** Everything

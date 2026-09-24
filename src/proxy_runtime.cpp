@@ -31,6 +31,14 @@ constexpr int kThreadExitDeadlineMs = 30000;
 /// one; small enough that the deque cannot grow past a few kilobytes.
 constexpr size_t kPendingSweepAt = 256;
 
+/// Until the first cycle succeeds start() is waiting on it, so a failed one is
+/// retried sooner than a slot. Afterwards a failure waits for the next slot.
+constexpr int64_t kFirstSyncRetryMs = 2000;
+
+/// Consecutive failed sync cycles before the proxy reports Degraded; the same
+/// threshold as the heartbeat's.
+constexpr int64_t kDegradeAfter = 3;
+
 std::string tidOf(std::thread::id id) {
     std::ostringstream o; o << id; return o.str();
 }
@@ -253,12 +261,19 @@ StdLogosResult ProxyRuntime::start(const ProxyConfig& cfg) {
         lk, milliseconds(m_cfg.startTimeoutMs), [this] { return m_startDone; });
 
     if (!signalled) {
-        // startVerifProxy has an unbounded prologue and no cancel. Leave the
-        // run going rather than tearing down underneath it; stop() waits for it.
+        // startVerifProxy has an unbounded prologue and no cancel, and the
+        // first sync keeps retrying. Leave the run going rather than tearing
+        // down underneath it; stop() waits for it.
         lk.unlock();
+        std::string lastSync;
+        {
+            std::lock_guard<std::mutex> elk(m_errMu);
+            lastSync = m_lastSyncError;
+        }
         return { false, {}, blockedReport(
                      "start() timed out after " + std::to_string(m_cfg.startTimeoutMs)
-                     + "ms waiting for the light client to initialise") };
+                     + "ms waiting for the light client to initialise"
+                     + (lastSync.empty() ? std::string() : "; last sync error: " + lastSync)) };
     }
     if (!m_startOk)
         return { false, {}, m_startError };
@@ -344,24 +359,17 @@ void ProxyRuntime::runOnce() {
         std::lock_guard<std::mutex> lk(m_errMu);
         m_headBlockNumber.clear();
         m_headUpdatedAt = 0;
+        m_lastSyncError.clear();
+        m_lastSyncedAt = 0;
     }
 
     m_ctx = ::startVerifProxy(m_upstreamJson.data(), nullptr, nullptr);
 
-    // BEFORE releasing start(), not after. A caller handed `success` calls
-    // straight into call(), which refuses anything that is not yet Running, and
-    // ~ProxyRuntime skips stop() while m_runActive is still false — which
-    // strands the pump loop below with nobody left alive to end it.
-    if (m_ctx) {
-        m_runActive = true;
-        setState(State::Running);
-    }
-
-    {
-        std::lock_guard<std::mutex> lk(m_startMu);
-        m_startDone = true;
-        m_startOk = (m_ctx != nullptr);
-        if (!m_startOk) {
+    if (!m_ctx) {
+        {
+            std::lock_guard<std::mutex> lk(m_startMu);
+            m_startDone = true;
+            m_startOk = false;
             // The C API has no error out-param: startVerifProxy caught a
             // CatchableError, destroyed its context and returned nil. The
             // reason exists only in the chronicles output on stdout.
@@ -369,10 +377,7 @@ void ProxyRuntime::runOnce() {
                            "reason through the C API; see the module log for the "
                            "chronicles output (topics vp_main / vp_engine)";
         }
-    }
-    m_startCv.notify_all();
-
-    if (!m_ctx) {
+        m_startCv.notify_all();
         setState(State::Failed, "startVerifProxy returned NULL");
         if (m_emit)
             m_emit("proxyStarted",
@@ -385,10 +390,21 @@ void ProxyRuntime::runOnce() {
         m_startCv.notify_all();
         return;
     }
-    if (m_emit)
-        m_emit("proxyStarted",
-               json{ { "success", true },
-                     { "chainId", m_cfg.expectedChainId() } }.dump());
+
+    // Live from here on, though still Starting: ~ProxyRuntime must stop() this
+    // run even if the first sync never succeeds.
+    m_runActive = true;
+
+    // Since nimbus-eth1#4828 the library never syncs on its own, and every
+    // request fails with "sync first" until the light client knows the current
+    // and next sync committees. So the pump drives the sync, and start() is
+    // released by the first good cycle rather than by startVerifProxy.
+    m_syncIntervalMs = readSyncIntervalMs();
+    m_syncIntervalReported = m_syncIntervalMs;
+    m_syncPhase = SyncPhase::Idle;
+    m_syncStreak = 0;
+    m_startReleased = false;
+    m_nextSync = steady_clock::now();
 
     auto nextKeepAlive = steady_clock::now();
     for (;;) {
@@ -398,7 +414,10 @@ void ProxyRuntime::runOnce() {
         // to end this loop, and join() has nothing else to wait on.
         if (m_stopRequested.load(std::memory_order_acquire) || m_shutdown.load()) break;
 
-        if (m_inFlight.load() == 0 && keepAliveEnabled()
+        advanceSync();
+
+        // The beat waits for the first sync: until then it could only fail.
+        if (m_startReleased && m_inFlight.load() == 0 && keepAliveEnabled()
             && steady_clock::now() >= nextKeepAlive) {
             issueKeepAlive();
             nextKeepAlive = steady_clock::now() + milliseconds(m_cfg.keepAliveIntervalMs);
@@ -419,6 +438,9 @@ void ProxyRuntime::runOnce() {
                 std::this_thread::sleep_for(milliseconds(1));
             continue;
         }
+        // A sync step that just completed is acted on without a nap.
+        if (m_syncPhase == SyncPhase::EthDone || m_syncPhase == SyncPhase::OpDone)
+            continue;
         // Idle: sleep on the condvar so an enqueue wakes us immediately.
         std::unique_lock<std::mutex> lk(m_mu);
         m_cv.wait_for(lk, milliseconds(m_cfg.pumpIntervalMs),
@@ -431,6 +453,9 @@ void ProxyRuntime::runOnce() {
 
 void ProxyRuntime::teardown() {
     assert(std::this_thread::get_id() == m_threadId);
+    // A stop() that lands before the first good sync must not leave start()
+    // waiting out its whole timeout.
+    releaseStart(false, "the proxy was stopped before its first light-client sync");
     setState(State::Draining);
 
     // DRAIN BEFORE STOPPING. stopVerifProxy sets ctx.stop, and
@@ -600,6 +625,12 @@ void ProxyRuntime::callbackTrampoline(Context*, int status, char* result, void* 
         switch (slot->kind) {
             case CallSlot::Kind::Heartbeat: box->rt->noteHeartbeat(*slot); break;
             case CallSlot::Kind::User:      break;
+            case CallSlot::Kind::Sync:
+            case CallSlot::Kind::OpSync:
+                // Not admitted, so nothing to release but the in-flight count.
+                box->rt->noteSync(*slot);
+                box->rt->m_inFlight.fetch_sub(1, std::memory_order_acq_rel);
+                return;
         }
         box->rt->noteFinished(slot->id, status == RET_SUCCESS);
     } catch (...) {
@@ -799,16 +830,13 @@ void ProxyRuntime::issueKeepAlive() {
     // eth_getBlockByNumber("latest") — on the library author's recommendation,
     // and it is the only beat that is worth the round trip:
     //
-    //  * it drives the sync, like every frontend method except eth_chainId: it
-    //    opens with engine.beaconSync(), which runs syncOnce() when the light
-    //    client is behind. That is what keeps chronos turning, since
-    //    processVerifProxyTasks only poll()s while a call is in flight.
-    //  * it exercises the WHOLE path a user call takes — beacon sync, header
-    //    store, an execution backend, and verifying the block against the
-    //    verified header. eth_syncing, the old beat, returned a hardcoded
-    //    `false` and stopped at beaconSync(), so the two minutes of "No
-    //    eligible backend for capability" in #11 never reached status(): the
-    //    module reported `running` while every user call was failing.
+    //  * it exercises the WHOLE path a user call takes — the synced check,
+    //    header store, an execution backend, and verifying the block against
+    //    the verified header. eth_syncing, the old beat, never reached an
+    //    execution backend, so the two minutes of "No eligible backend for
+    //    capability" in #11 never reached status(): the module reported
+    //    `running` while every user call was failing. (The sync itself is
+    //    advanceSync()'s job since nimbus-eth1#4828; requests no longer run it.)
     //  * it answers with the head, so there is no second probe to issue.
     //  * selectBackend() decays negative scores toward 0 only when it is
     //    CALLED, so a beat that reaches an execution backend is also what lets
@@ -848,14 +876,14 @@ void ProxyRuntime::issueKeepAlive() {
 // the return value is not. Three in a row is deliberately more than one blip
 // and less than a long outage.
 void ProxyRuntime::noteHeartbeat(const CallSlot& slot) {
-    static constexpr int64_t kDegradeAfter = 3;
-
     if (slot.status == RET_SUCCESS) {
         m_heartbeatStreak.store(0, std::memory_order_relaxed);
         noteHead(slot);
         // Only climb back out of Degraded — never overwrite Draining/Stopped,
-        // which a concurrent stop() may have just set.
-        if (m_state.load() == State::Degraded) setState(State::Running);
+        // which a concurrent stop() may have just set — and not while the sync
+        // is what put it there.
+        if (m_state.load() == State::Degraded && m_syncStreak.load() < kDegradeAfter)
+            setState(State::Running);
         return;
     }
 
@@ -863,6 +891,143 @@ void ProxyRuntime::noteHeartbeat(const CallSlot& slot) {
     const int64_t streak = m_heartbeatStreak.fetch_add(1, std::memory_order_relaxed) + 1;
     if (streak >= kDegradeAfter && m_state.load() == State::Running)
         setState(State::Degraded, errorMessage(slot.status, slot.result));
+}
+
+// ---------------------------------------------------------------------------
+// Sync
+// ---------------------------------------------------------------------------
+
+// One step of the cycle per pump turn. Issuing from here and never from a
+// completion keeps every entry into the library at the top of the pump.
+void ProxyRuntime::advanceSync() {
+    assert(std::this_thread::get_id() == m_threadId);
+    switch (m_syncPhase) {
+        case SyncPhase::Idle:
+            if (steady_clock::now() < m_nextSync) return;
+            m_syncCycleStart = steady_clock::now();
+            issueSync(CallSlot::Kind::Sync);
+            return;
+        case SyncPhase::EthDone:
+            if (m_syncOk && !m_cfg.opExecutionApiUrls.empty()) {
+                // opSyncOnce reads the L1 latest/finalized headers, so it runs
+                // after the L1 sync, as nimbus' own loop does.
+                issueSync(CallSlot::Kind::OpSync);
+                return;
+            }
+            finishSyncCycle(m_syncOk, m_syncError);
+            return;
+        case SyncPhase::OpDone:
+            finishSyncCycle(m_syncOk, m_syncError);
+            return;
+        case SyncPhase::Eth:
+        case SyncPhase::Op:
+            return;
+    }
+}
+
+void ProxyRuntime::issueSync(CallSlot::Kind kind) {
+    assert(std::this_thread::get_id() == m_threadId);
+    auto slot = std::make_shared<CallSlot>();
+    slot->id = m_nextId.fetch_add(1, std::memory_order_relaxed);
+    slot->kind = kind;
+    const bool op = kind == CallSlot::Kind::OpSync;
+    slot->method = op ? "nvp_op_sync" : "nvp_eth_sync";
+    {
+        std::lock_guard<std::mutex> lk(m_mu);
+        prunePendingLocked();
+        m_pending.push_back(slot);
+    }
+
+    // Set before the call: the callback fires synchronously when the future
+    // is already finished.
+    m_syncPhase = op ? SyncPhase::Op : SyncPhase::Eth;
+    auto* box = new CallBox{ slot, this };
+    m_inFlight.fetch_add(1, std::memory_order_acq_rel);
+    if (op) ::nvp_op_sync(m_ctx, &ProxyRuntime::callbackTrampoline, box);
+    else    ::nvp_eth_sync(m_ctx, &ProxyRuntime::callbackTrampoline, box);
+}
+
+// Completion side: record only.
+void ProxyRuntime::noteSync(const CallSlot& slot) {
+    m_syncOk = slot.status == RET_SUCCESS;
+    m_syncError = m_syncOk ? std::string()
+                           : slot.method + ": " + errorMessage(slot.status, slot.result);
+    m_syncPhase = slot.kind == CallSlot::Kind::OpSync ? SyncPhase::OpDone
+                                                      : SyncPhase::EthDone;
+}
+
+void ProxyRuntime::finishSyncCycle(bool ok, const std::string& error) {
+    m_syncPhase = SyncPhase::Idle;
+    if (ok) {
+        m_syncStreak.store(0, std::memory_order_relaxed);
+        m_nextSync = m_syncCycleStart + milliseconds(m_syncIntervalMs);
+        {
+            std::lock_guard<std::mutex> lk(m_errMu);
+            m_lastSyncedAt = nowSeconds();
+        }
+        if (!m_startReleased) releaseStart(true, {});
+        else if (m_state.load() == State::Degraded && m_heartbeatStreak.load() < kDegradeAfter)
+            setState(State::Running);
+        return;
+    }
+
+    m_syncFailures.fetch_add(1, std::memory_order_relaxed);
+    const int64_t streak = m_syncStreak.fetch_add(1, std::memory_order_relaxed) + 1;
+    {
+        std::lock_guard<std::mutex> lk(m_errMu);
+        m_lastSyncError = error;
+    }
+    m_nextSync = m_syncCycleStart
+               + milliseconds(m_startReleased ? m_syncIntervalMs : kFirstSyncRetryMs);
+    if (streak >= kDegradeAfter && m_state.load() == State::Running)
+        setState(State::Degraded, error);
+}
+
+// Idempotent; only the first call per run counts.
+void ProxyRuntime::releaseStart(bool ok, const std::string& error) {
+    if (m_startReleased) return;
+    m_startReleased = true;
+    // BEFORE releasing start(): a caller handed `success` calls straight into
+    // call(), which refuses anything that is not yet Running.
+    if (ok) setState(State::Running);
+    {
+        std::lock_guard<std::mutex> lk(m_startMu);
+        m_startDone = true;
+        m_startOk = ok;
+        if (!ok) m_startError = error;
+    }
+    m_startCv.notify_all();
+    if (!m_emit) return;
+    json p{ { "success", ok } };
+    if (ok) p["chainId"] = m_cfg.expectedChainId();
+    else    p["error"] = error;
+    m_emit("proxyStarted", p.dump());
+}
+
+// The library answers synchronously, with the slot duration as a hex QUANTITY.
+// Anything unexpected falls back to one mainnet slot.
+int64_t ProxyRuntime::readSyncIntervalMs() {
+    struct Reply { bool called = false; std::string raw; };
+    auto reply = std::make_unique<Reply>();
+    ::nvp_eth_syncInterval(m_ctx, [](Context*, int status, char* result, void* ud) {
+        try {
+            NimString owned(result);
+            auto* r = static_cast<Reply*>(ud);
+            r->called = true;
+            if (status == RET_SUCCESS) r->raw = owned.str();
+        } catch (...) {}
+    }, reply.get());
+    // A callback that did not fire yet may still fire: leak, never free under it.
+    if (!reply->called) { (void)reply.release(); return kBeaconSlotMs; }
+
+    bool wasJson = false;
+    const json v = decodePayload(reply->raw, wasJson);
+    int64_t ms = 0;
+    try {
+        if (v.is_number_integer()) ms = v.get<int64_t>();
+        else if (v.is_string()) ms = std::stoll(v.get<std::string>(), nullptr, 16);
+    } catch (const std::exception&) {}
+    return ms > 0 ? ms : kBeaconSlotMs;
 }
 
 // The head the beat just verified. `number` is a hex QUANTITY string inside the
@@ -928,6 +1093,16 @@ json ProxyRuntime::statusSnapshot() const {
         { "queuedCalls", m_queuedNow.load() },
         { "queueTimeoutMs", m_cfg.queueTimeoutMs },
     };
+    {
+        std::lock_guard<std::mutex> lk(m_errMu);
+        j["sync"] = json{
+            { "intervalMs", m_syncIntervalReported.load() },
+            { "lastSyncedAt", m_lastSyncedAt },
+            { "lastError", m_lastSyncError },
+            { "failures", m_syncFailures.load() },
+            { "consecutiveFailures", m_syncStreak.load() },
+        };
+    }
     j["keepAlive"] = m_cfg.keepAlive;
     j["pump"] = pumpHistogram();
     return j;

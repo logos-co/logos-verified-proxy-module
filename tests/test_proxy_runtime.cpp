@@ -358,7 +358,6 @@ LOGOS_TEST(runtime_queues_calls_beyond_the_in_flight_ceiling) {
 LOGOS_TEST(runtime_serves_the_admission_queue_in_fifo_order) {
     auto t = LogosTestContext("verified_proxy_module");
     mockReset();
-    mockHoldCompletions(true);
 
     ProxyConfig cfg = testConfig();
     cfg.maxInFlight = 1;
@@ -367,6 +366,8 @@ LOGOS_TEST(runtime_serves_the_admission_queue_in_fifo_order) {
 
     ProxyRuntime rt(nullptr);
     LOGOS_ASSERT_TRUE(rt.start(cfg).success);
+    // After start(): the first sync has to complete for start() to return.
+    mockHoldCompletions(true);
 
     StdLogosResult first;
     StdLogosResult second;
@@ -408,7 +409,6 @@ LOGOS_TEST(runtime_serves_the_admission_queue_in_fifo_order) {
 LOGOS_TEST(runtime_expires_a_call_that_waits_too_long_in_the_admission_queue) {
     auto t = LogosTestContext("verified_proxy_module");
     mockReset();
-    mockHoldCompletions(true);
 
     ProxyConfig cfg = testConfig();
     cfg.maxInFlight = 1;
@@ -417,6 +417,8 @@ LOGOS_TEST(runtime_expires_a_call_that_waits_too_long_in_the_admission_queue) {
 
     ProxyRuntime rt(nullptr);
     LOGOS_ASSERT_TRUE(rt.start(cfg).success);
+    // After start(): the first sync has to complete for start() to return.
+    mockHoldCompletions(true);
 
     StdLogosResult first;
     std::thread active([&] { first = rt.call("first", json::array()); });
@@ -634,12 +636,9 @@ LOGOS_TEST(runtime_pump_does_not_busy_spin_while_idle) {
 }
 
 LOGOS_TEST(runtime_heartbeat_issues_the_beat_only_when_enabled) {
-    // processVerifProxyTasks only poll()s while pendingCalls > 0, so an idle
-    // proxy does not advance its light client at all. The beat is
-    // eth_getBlockByNumber("latest"): it drives beaconSync() like every
-    // frontend method except eth_chainId, and unlike the eth_syncing it
-    // replaced it also reaches an execution backend and verifies the block, so
-    // a backend that has gone ineligible shows up in status().
+    // The beat is eth_getBlockByNumber("latest"): unlike the eth_syncing it
+    // replaced it reaches an execution backend and verifies the block, so a
+    // backend that has gone ineligible shows up in status().
     {
         auto t = LogosTestContext("verified_proxy_module");
         mockReset();
@@ -915,4 +914,124 @@ LOGOS_TEST(runtime_status_reports_a_default_network_before_any_start) {
     rt.stop();
     LOGOS_ASSERT_EQ(after["network"].get<std::string>(), std::string("sepolia"));
     LOGOS_ASSERT_EQ(after["chainId"].get<int64_t>(), 11155111);
+}
+
+// ── The sync cycle (nimbus-eth1#4828: the library no longer syncs itself) ──
+
+LOGOS_TEST(runtime_start_returns_only_after_the_first_sync) {
+    // Every request fails with "sync first" until one nvp_eth_sync completes,
+    // so start() handing back success before that would be a lie.
+    auto t = LogosTestContext("verified_proxy_module");
+    mockReset();
+
+    ProxyRuntime rt(nullptr);
+    LOGOS_ASSERT_TRUE(rt.start(testConfig()).success);
+    const auto order = mockCallOrder();
+    rt.stop();
+
+    const int sync = lastIndexOf(order, "nvp_eth_sync");
+    LOGOS_ASSERT_GE(sync, 0);
+    LOGOS_ASSERT_LT(lastIndexOf(order, "startVerifProxy"), sync);
+    LOGOS_ASSERT_EQ(t.cFunctionCallCount("nvp_op_sync"), 0);   // no OP configured
+}
+
+LOGOS_TEST(runtime_a_failing_first_sync_fails_start_with_its_reason) {
+    auto t = LogosTestContext("verified_proxy_module");
+    mockReset();
+    t.mockCFunction("nvp_eth_sync_status").returns(RET_ERROR);
+    t.mockCFunction("nvp_eth_sync").returns("UnavailableDataError: no beacon backend");
+
+    ProxyConfig cfg = testConfig();
+    cfg.startTimeoutMs = 300;
+
+    ProxyRuntime rt(nullptr);
+    const auto r = rt.start(cfg);
+    LOGOS_ASSERT_FALSE(r.success);
+    LOGOS_ASSERT_TRUE(r.error.find("no beacon backend") != std::string::npos);
+    LOGOS_ASSERT_FALSE(rt.running());
+    // The run is still live and retrying; stop() must end it.
+    LOGOS_ASSERT_TRUE(rt.stop().success);
+}
+
+LOGOS_TEST(runtime_stop_before_the_first_sync_releases_start) {
+    auto t = LogosTestContext("verified_proxy_module");
+    mockReset();
+    mockHoldCompletions(true);
+
+    ProxyRuntime rt(nullptr);
+    StdLogosResult started;
+    std::thread starter([&] { started = rt.start(testConfig()); });
+    LOGOS_ASSERT_TRUE(spinUntil([&] { return t.cFunctionCallCount("nvp_eth_sync") == 1; }));
+
+    const auto t0 = steady_clock::now();
+    LOGOS_ASSERT_TRUE(rt.stop().success);
+    starter.join();
+    LOGOS_ASSERT_FALSE(started.success);
+    // Released by teardown, not by start()'s 5 s timeout.
+    LOGOS_ASSERT_LT(duration_cast<milliseconds>(steady_clock::now() - t0).count(), 3000);
+    mockHoldCompletions(false);
+}
+
+LOGOS_TEST(runtime_syncs_every_interval_the_library_reports) {
+    auto t = LogosTestContext("verified_proxy_module");
+    mockReset();
+    t.mockCFunction("nvp_eth_syncInterval").returns("\"0x14\"");   // 20 ms
+
+    ProxyRuntime rt(nullptr);
+    LOGOS_ASSERT_TRUE(rt.start(testConfig()).success);
+    const bool synced = spinUntil([&] { return t.cFunctionCallCount("nvp_eth_sync") >= 4; });
+    const json s = rt.statusSnapshot();
+    rt.stop();
+
+    LOGOS_ASSERT_TRUE(synced);
+    LOGOS_ASSERT_EQ(s["sync"]["intervalMs"].get<int64_t>(), 20);
+    LOGOS_ASSERT_GT(s["sync"]["lastSyncedAt"].get<int64_t>(), 0);
+    LOGOS_ASSERT_EQ(s["sync"]["failures"].get<int64_t>(), 0);
+}
+
+LOGOS_TEST(runtime_op_sync_follows_each_l1_sync_when_op_is_configured) {
+    auto t = LogosTestContext("verified_proxy_module");
+    mockReset();
+    t.mockCFunction("nvp_eth_syncInterval").returns("\"0x14\"");
+
+    ProxyConfig cfg = testConfig();
+    cfg.opExecutionApiUrls = { "https://op.example" };
+
+    ProxyRuntime rt(nullptr);
+    LOGOS_ASSERT_TRUE(rt.start(cfg).success);
+    LOGOS_ASSERT_TRUE(spinUntil([&] { return t.cFunctionCallCount("nvp_op_sync") >= 2; }));
+    const auto order = mockCallOrder();
+    rt.stop();
+
+    // Strict alternation: opSyncOnce reads L1 headers, so L1 goes first.
+    std::vector<std::string> syncs;
+    for (const auto& e : order)
+        if (e == "nvp_eth_sync" || e == "nvp_op_sync") syncs.push_back(e);
+    for (size_t i = 0; i < syncs.size(); ++i)
+        LOGOS_ASSERT_EQ(syncs[i], std::string(i % 2 ? "nvp_op_sync" : "nvp_eth_sync"));
+}
+
+LOGOS_TEST(runtime_consecutive_sync_failures_degrade_the_proxy) {
+    auto t = LogosTestContext("verified_proxy_module");
+    mockReset();
+    t.mockCFunction("nvp_eth_syncInterval").returns("\"0x14\"");
+
+    ProxyRuntime rt(nullptr);
+    LOGOS_ASSERT_TRUE(rt.start(testConfig()).success);
+    t.mockCFunction("nvp_eth_sync_status").returns(RET_ERROR);
+    t.mockCFunction("nvp_eth_sync").returns("BackendFetchError: 503");
+    const bool degraded = spinUntil([&] {
+        return rt.statusSnapshot()["state"].get<std::string>() == "degraded";
+    });
+    const json s = rt.statusSnapshot();
+
+    // And back once the sync recovers.
+    t.mockCFunction("nvp_eth_sync_status").returns(RET_SUCCESS);
+    const bool recovered = spinUntil([&] { return rt.running(); });
+    rt.stop();
+
+    LOGOS_ASSERT_TRUE(degraded);
+    LOGOS_ASSERT_GE(s["sync"]["consecutiveFailures"].get<int64_t>(), 3);
+    LOGOS_ASSERT_TRUE(s["sync"]["lastError"].get<std::string>().find("503") != std::string::npos);
+    LOGOS_ASSERT_TRUE(recovered);
 }
