@@ -39,6 +39,9 @@ void     freeContext(Context *ctx);
 int      processVerifProxyTasks(Context *ctx);
 void     proxyCall(Context *ctx, char *name, char *params, CallBackProc cb, void *userData);
 void     freeNimAllocatedString(char *res);
+void     nvp_eth_sync(Context *ctx, CallBackProc cb, void *userData);
+void     nvp_op_sync(Context *ctx, CallBackProc cb, void *userData);
+void     nvp_eth_syncInterval(Context *ctx, CallBackProc cb, void *userData);
 
 #ifdef __cplusplus
 }

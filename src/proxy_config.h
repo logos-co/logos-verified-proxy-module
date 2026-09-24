@@ -47,9 +47,8 @@ const std::vector<NetworkProfile>& networkProfiles();
 /// with a different slot time cannot be configured without first being added
 /// to the whitelist above, which is where the value would then belong.
 ///
-/// It is the floor under `keepAliveIntervalMs`, because the heartbeat's only
-/// effect is to drive `syncOnce()` and the light client's optimistic header
-/// advances at most once per slot. See `keepAliveIntervalMs`.
+/// It is the floor under `keepAliveIntervalMs`, because the verified head the
+/// beat reads advances at most once per slot. See `keepAliveIntervalMs`.
 constexpr int64_t kBeaconSlotMs = 12000;
 
 /// Lookup by name, or nullptr when the network is not supported.
@@ -101,32 +100,15 @@ struct ProxyConfig {
     int64_t drainTimeoutMs = 2000;
     int64_t pumpIntervalMs = 50;
     int64_t maxInFlight = 64;
-    /// "off" | "interval" | "continuous". `processVerifProxyTasks` only polls
-    /// while `pendingCalls > 0`, so an idle proxy does not advance its light
-    /// client at all — the heartbeat is what keeps chronos turning.
-    ///
-    /// MEASURED on sepolia, 5 minutes idle (2026-08-20):
-    ///   off        head 11532988 -> 11532949  (BACKWARDS 39 blocks), 3186ms
-    ///   continuous head 11532988 -> 11533012  (+24, i.e. tracking), 0ms
-    ///
-    /// So "off" is not merely a cold start: the reported head REGRESSES, which
-    /// a consumer polling block numbers will see as time running backwards.
-    /// Treat it as a diagnostic setting, not a supported deployment.
+    /// "off" | "interval" | "continuous": the health heartbeat. It no longer
+    /// drives the light client: since nimbus-eth1#4828 the runtime calls
+    /// nvp_eth_sync once per slot regardless, so "off" only loses the
+    /// execution-path probe and `status().head`.
     std::string keepAlive = "interval";
     /// How often the heartbeat runs. CLAMPED UP to `kBeaconSlotMs` by
-    /// fromJson(), and the clamped value is what getConfig() reports back.
-    ///
-    /// The beat opens with `beaconSync()` — every frontend method except
-    /// `eth_chainId` does — which takes the engine's sync lock and runs a full
-    /// `syncOnce()` whenever `isSynced()` is false. And `isSynced()` is
-    /// `optimisticSlot + 1 >= currentSlot`, i.e. slot-granular: it goes false
-    /// at the top of each slot and back to true once the beacon node publishes
-    /// that slot's optimistic update, a few seconds in. So at the 1000ms this
-    /// used to default to, the four or five beats inside that window each
-    /// re-fetch the same update and hand it back to the processor, which
-    /// discards it as `Duplicate`. One fetch per slot is all the chain can
-    /// answer; the rest is traffic against the beacon endpoint, one execution
-    /// request each, and churn in the library's Nim heap.
+    /// fromJson(), and the clamped value is what getConfig() reports back:
+    /// the verified head moves at most once per slot, so a faster beat is one
+    /// more execution request for the same answer.
     int64_t keepAliveIntervalMs = kBeaconSlotMs;
     bool autoStart = false;
 

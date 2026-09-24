@@ -120,7 +120,8 @@ public:
     /// Also emits `proxyStopped`.
     StdLogosResult stop();
 
-    /// True when the proxy is running and its last heartbeat succeeded.
+    /// True when the proxy is running: neither the sync nor the heartbeat has
+    /// failed three times in a row.
     bool ok();
 
     /// Module and proxy state. Never blocks on the proxy thread.
@@ -131,6 +132,9 @@ public:
     ///   "network": string, "chainId": number,
     ///   "startedAt": number, "uptimeSeconds": number,
     ///   "head": { "blockNumber": string, "updatedAt": number },
+    ///   "sync": { "intervalMs": number, "lastSyncedAt": number,
+    ///             "failures": number, "consecutiveFailures": number,
+    ///             "lastError": string },
     ///   "counters": { "callsTotal": number, "callsFailed": number,
     ///                 "callsInFlight": number, "callsAdmitted": number,
     ///                 "leakedCalls": number, "heartbeatFailures": number,

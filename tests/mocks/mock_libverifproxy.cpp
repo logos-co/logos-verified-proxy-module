@@ -193,3 +193,20 @@ extern "C" void freeNimAllocatedString(char* res) {
     LOGOS_CMOCK_RECORD("freeNimAllocatedString");
     free(res);   // pairs with the strdup above — ASan catches a missed release
 }
+
+// Queued like proxyCall, so a test can hold or fail the first sync.
+extern "C" void nvp_eth_sync(Context* c, CallBackProc cb, void* ud) {
+    enqueueCompletion("nvp_eth_sync", c, cb, ud);
+}
+
+extern "C" void nvp_op_sync(Context* c, CallBackProc cb, void* ud) {
+    enqueueCompletion("nvp_op_sync", c, cb, ud);
+}
+
+// Synchronous, like upstream: one mainnet slot unless a test overrides it.
+extern "C" void nvp_eth_syncInterval(Context* c, CallBackProc cb, void* ud) {
+    LOGOS_CMOCK_RECORD("nvp_eth_syncInterval");
+    observe("nvp_eth_syncInterval");
+    const char* res = LOGOS_CMOCK_RETURN_STRING("nvp_eth_syncInterval");
+    cb(c, RET_SUCCESS, strdup(res ? res : "\"0x2ee0\""), ud);
+}
