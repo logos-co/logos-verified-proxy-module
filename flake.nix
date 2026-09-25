@@ -9,7 +9,7 @@
   };
 
   inputs = {
-    logos-module-builder.url = "github:logos-co/logos-module-builder";
+    logos-module-builder.url = "github:logos-co/logos-module-builder/feat/windows-unit-tests";
     logos-nix.url = "github:logos-co/logos-nix";
 
     # git+https, NOT github: — the github: scheme does not carry submodules

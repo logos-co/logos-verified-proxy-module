@@ -380,7 +380,10 @@ tied to one fault after the fact. To see which compiler built an archive:
 ```bash
 nix build .#packages.x86_64-windows.libverifproxy   # the static library
 nix build .#packages.x86_64-windows.default         # the module plugin
+nix build .#packages.x86_64-windows.unit-tests      # the unit tests, with a test manifest
 ```
+
+CI runs the unit tests natively on a Windows runner (`.github/workflows/windows.yml`).
 
 Both build on an `x86_64-linux` builder. `libverifproxy` produces a `pe-x86-64`
 archive — `$out/lib/libverifproxy.a` with `startVerifProxy`, `stopVerifProxy`,
