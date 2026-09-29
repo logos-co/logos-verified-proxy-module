@@ -221,6 +221,9 @@ to one beacon slot (12 s) if it is set lower**, and the raised value is what
 `getConfig()` reports back: the verified head moves at most once per slot, so a
 faster beat only adds execution requests. Three consecutive beat failures take
 three slots (~36 s) to degrade the proxy.
+An outstanding user call or sync does not postpone the beat; only a previous
+beat still in flight does. This keeps `status().head.updatedAt` current when
+another call is slow, without stacking duplicate head checks.
 
 ### What the beat is, and why it is that call
 

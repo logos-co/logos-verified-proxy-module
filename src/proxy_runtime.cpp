@@ -355,6 +355,7 @@ void ProxyRuntime::runOnce() {
     // teardown(). Reset the per-run counters that describe the CURRENT run so
     // a restart does not inherit the last run's health.
     m_heartbeatStreak.store(0, std::memory_order_relaxed);
+    m_heartbeatInFlight.store(false, std::memory_order_relaxed);
     {
         std::lock_guard<std::mutex> lk(m_errMu);
         m_headBlockNumber.clear();
@@ -417,7 +418,8 @@ void ProxyRuntime::runOnce() {
         advanceSync();
 
         // The beat waits for the first sync: until then it could only fail.
-        if (m_startReleased && m_inFlight.load() == 0 && keepAliveEnabled()
+        if (m_startReleased && keepAliveEnabled()
+            && !m_heartbeatInFlight.load(std::memory_order_acquire)
             && steady_clock::now() >= nextKeepAlive) {
             issueKeepAlive();
             nextKeepAlive = steady_clock::now() + milliseconds(m_cfg.keepAliveIntervalMs);
@@ -623,7 +625,10 @@ void ProxyRuntime::callbackTrampoline(Context*, int status, char* result, void* 
             slot->cv.notify_all();
         }
         switch (slot->kind) {
-            case CallSlot::Kind::Heartbeat: box->rt->noteHeartbeat(*slot); break;
+            case CallSlot::Kind::Heartbeat:
+                box->rt->m_heartbeatInFlight.store(false, std::memory_order_release);
+                box->rt->noteHeartbeat(*slot);
+                break;
             case CallSlot::Kind::User:      break;
             case CallSlot::Kind::Sync:
             case CallSlot::Kind::OpSync:
@@ -859,6 +864,7 @@ void ProxyRuntime::issueKeepAlive() {
     slot->kind = CallSlot::Kind::Heartbeat;
 
     auto* box = new CallBox{ slot, this };
+    m_heartbeatInFlight.store(true, std::memory_order_release);
     m_inFlight.fetch_add(1, std::memory_order_acq_rel);
     ::proxyCall(m_ctx, slot->method.data(), slot->params.data(),
                 &ProxyRuntime::callbackTrampoline, box);
