@@ -722,6 +722,43 @@ LOGOS_TEST(runtime_the_head_is_refreshed_on_every_beat) {
     LOGOS_ASSERT_GT(first, static_cast<int64_t>(0));
 }
 
+LOGOS_TEST(runtime_a_stalled_sync_does_not_starve_head_checks) {
+    // A sync that never calls back leaves m_inFlight nonzero. The light client
+    // can still answer head checks, and the verified-routing gate must not
+    // call that otherwise healthy path stale merely because sync is pending.
+    auto t = LogosTestContext("verified_proxy_module");
+    mockReset();
+    t.mockCFunction("nvp_eth_syncInterval").returns("\"0x1f4\"");  // 500 ms
+    t.mockCFunction("proxyCall").returns(R"({"number":"0xb0947c"})");
+
+    ProxyConfig cfg = testConfig();
+    cfg.keepAlive = "interval";
+    cfg.keepAliveIntervalMs = 20;
+
+    ProxyRuntime rt(nullptr);
+    LOGOS_ASSERT_TRUE(rt.start(cfg).success);
+    LOGOS_ASSERT_TRUE(spinUntil([&] {
+        return t.cFunctionCallCount("proxyCall:eth_getBlockByNumber") > 0;
+    }));
+
+    t.mockCFunction("nvp_eth_sync_status").returns(mockNeverCompletes());
+    const bool syncStalled = spinUntil([&] {
+        return t.cFunctionCallCount("nvp_eth_sync") >= 2
+            && rt.statusSnapshot()["counters"]["callsInFlight"].get<int64_t>() >= 1;
+    });
+    const int beats = t.cFunctionCallCount("proxyCall:eth_getBlockByNumber");
+    const bool beatContinued = spinUntil([&] {
+        return t.cFunctionCallCount("proxyCall:eth_getBlockByNumber") >= beats + 3;
+    });
+    const json s = rt.statusSnapshot();
+    rt.stop();
+
+    LOGOS_ASSERT_TRUE(syncStalled);
+    LOGOS_ASSERT_TRUE(beatContinued);
+    LOGOS_ASSERT_GE(s["counters"]["callsInFlight"].get<int64_t>(), static_cast<int64_t>(1));
+    LOGOS_ASSERT_GT(s["head"]["updatedAt"].get<int64_t>(), static_cast<int64_t>(0));
+}
+
 LOGOS_TEST(runtime_pending_slots_stay_bounded_across_many_beats) {
     // Every beat used to append weak_ptrs to m_pending that nothing removed
     // before teardown. make_shared puts the CallSlot's storage in the same

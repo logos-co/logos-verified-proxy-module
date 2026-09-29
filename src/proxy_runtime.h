@@ -190,6 +190,9 @@ private:
     std::atomic<int64_t>  m_callsTotal{0};
     std::atomic<int64_t>  m_callsFailed{0};
     std::atomic<int64_t>  m_heartbeatFailures{0};
+    // A slow user call or sync must not suppress head checks. Bound the beat
+    // by its OWN outstanding call instead of the total in-flight count.
+    std::atomic<bool>     m_heartbeatInFlight{false};
     // Consecutive failures, not the lifetime total: one blip must not latch
     // the proxy into degraded forever.
     std::atomic<int64_t>  m_heartbeatStreak{0};
