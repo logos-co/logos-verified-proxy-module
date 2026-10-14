@@ -95,6 +95,7 @@
           patchPhase = old.patchPhase + ''
             # convHeader drops the Glamsterdam header fields, so a post-fork block
             # never hashes to its own hash and #4918's anchor check rejects it.
+            # Drop once status-im/nimbus-eth1#4984 lands.
             patch -p1 -i ${./patches/nimbus-convheader-glamsterdam.patch}
           '' + lib.optionalString isWin ''
             # nim-bearssl copies and patches its csources at compile time through
