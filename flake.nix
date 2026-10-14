@@ -15,11 +15,11 @@
     # git+https, NOT github: — the github: scheme does not carry submodules
     # (NixOS/nix#14982) and nimbus' nix/default.nix asserts on `self.submodules`.
     # Needs Nix >= 2.27 for the flake-level `self = { submodules = true; }`.
-    # Pinned to a REV, not a tag: the encoding and fee fixes this module needs
-    # (upstream #4720, #4721, #4722, #4738, #4771) and the proxy fixes #4834, #4837
-    # landed after v0.4.0 and there is no tag carrying them yet. Move back to a
-    # tag once one ships. #4828 moved sync to the host: see nvp_eth_sync.
-    nimbus-eth1.url = "git+https://github.com/status-im/nimbus-eth1?submodules=1&rev=4b0ce0b937d48c5ac8f7b72f39d438d8aa0be0e2";
+    # Pinned to a REV, not a tag: v0.4.2 predates #4921 (batched eth_getProof
+    # for EVM storage reads, the fix for "Unable to get slot", #4870) and #4918.
+    # Move back to a tag once one carries them. #4828 moved sync to the host:
+    # see nvp_eth_sync.
+    nimbus-eth1.url = "git+https://github.com/status-im/nimbus-eth1?submodules=1&rev=f7bb2582703e58d6e6f8e9591149755aa9e7b29b";
   };
 
   outputs = inputs@{ self, logos-module-builder, logos-nix, nimbus-eth1 }:
@@ -35,9 +35,9 @@
         then logos-nix.lib.mkWindowsPkgs { buildSystem = "x86_64-linux"; }
         else import nixpkgs { inherit system; };
 
-      # nimbus-eth1's flake.lock still pins nimbus-build-system at Nim 2.2.10, while
-      # the submodule its Makefile builds with moved to 2.2.12 (nimbus-eth1#4761),
-      # which fixes refc heap corruption (nim-lang/Nim#25992). Build from the submodule.
+      # Nim from the nimbus-build-system submodule nimbus' Makefile uses, not from
+      # its flake.lock: the lock lagged it at 2.2.10, which corrupts the refc heap
+      # (nim-lang/Nim#25992), until nimbus-eth1#4954.
       nbs = "${nimbus-eth1}/vendor/nimbus-build-system";
       nimFor = system: nimbus-eth1.inputs.nixpkgs.legacyPackages.${system}.callPackage
         "${nbs}/nix/default.nix" { src = nbs; };

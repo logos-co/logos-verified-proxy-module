@@ -351,10 +351,10 @@ nix run github:logos-co/logos-doctest -- run doctests/verified-proxy-runtime.tes
 ## Which Nim builds the library
 
 Nim 2.2.12 — the compiler nimbus-eth1 builds itself with, from the pinned rev's
-`vendor/nimbus-build-system` submodule. nimbus-eth1's own `flake.lock` still
-locks nimbus-build-system at 2.2.10 — the submodule moved in
-[nimbus-eth1#4761][nimbus-4761] and the lock did not follow — so taking the
-compiler from that flake builds with 2.2.10. This flake builds it from the
+`vendor/nimbus-build-system` submodule. nimbus-eth1's own `flake.lock` locked
+nimbus-build-system at 2.2.10 for a month after the submodule moved in
+[nimbus-eth1#4761][nimbus-4761] (it caught up in #4954), and taking the
+compiler from that flake built with 2.2.10. This flake builds it from the
 submodule instead, so a nimbus bump that moves Nim moves it here too.
 
 2.2.10 corrupts the refc heap. It resets a case object by zeroing only the
