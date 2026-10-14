@@ -91,6 +91,21 @@
         base.overrideAttrs (old: {
           pname = "libverifproxy";
 
+          # Upstream's patchPhase runs no hooks, so `patches`/postPatch would be ignored.
+          patchPhase = old.patchPhase + ''
+            # convHeader drops the Glamsterdam header fields, so a post-fork block
+            # never hashes to its own hash and #4918's anchor check rejects it.
+            patch -p1 -i ${./patches/nimbus-convheader-glamsterdam.patch}
+          '' + lib.optionalString isWin ''
+            # nim-bearssl copies and patches its csources at compile time through
+            # `nim e`, which the cross wrapper runs as Windows: every path it builds
+            # is joined with backslashes. Patch them in place and use that tree.
+            patch -p1 -d vendor/nim-bearssl/bearssl/csources \
+              -i "$PWD/vendor/nim-bearssl/bearssl/csources.patch"
+            substituteInPlace vendor/nim-bearssl/bearssl/abi/csources.nim \
+              --replace-fail 'when defined(`any`) or defined(standalone)' 'when true'
+          '';
+
           # Upstream has `perl sqlite python3` in buildInputs. perl and python3
           # are Makefile TOOLS, not target libraries — harmless natively, fatal
           # under cross, because nixpkgs marks the mingw python3 BROKEN and the
