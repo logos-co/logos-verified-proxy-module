@@ -2,7 +2,7 @@ name: verified-proxy Doc-Tests
 
 # Runs the executable doc-test end-to-end via the shared doctest CLI:
 #   - verified-proxy-runtime.test.yaml: packages and installs THIS commit as an
-#     .lgx, starts a logoscore daemon, loads the module, configures the proxy
+#     .lgx, starts a logosctl daemon, loads the module, configures the proxy
 #     from a freshly fetched trusted root, bootstraps the light client against
 #     LIVE Sepolia, makes verified calls, and shuts down.
 #
