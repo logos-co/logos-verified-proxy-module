@@ -10567,18 +10567,18 @@
         "nixpkgs": "nixpkgs_148"
       },
       "locked": {
-        "lastModified": 1791989317,
+        "lastModified": 1792837445,
         "lfs": false,
-        "narHash": "sha256-zq3Oq/goJuJmk903iKk9niv3eBQil5ZewoztrYiiXmE=",
-        "ref": "refs/heads/master",
-        "rev": "f7bb2582703e58d6e6f8e9591149755aa9e7b29b",
-        "revCount": 5792,
+        "narHash": "sha256-B3JhJPp1cNkFqOwFb++v4fAWaJRBtmsO48Gct2KMU9s=",
+        "ref": "refs/tags/v0.4.4",
+        "rev": "721918411e26d0a73f33d69d4967be9b84bccf59",
+        "revCount": 5868,
         "submodules": true,
         "type": "git",
         "url": "https://github.com/status-im/nimbus-eth1"
       },
       "original": {
-        "rev": "f7bb2582703e58d6e6f8e9591149755aa9e7b29b",
+        "ref": "refs/tags/v0.4.4",
         "submodules": true,
         "type": "git",
         "url": "https://github.com/status-im/nimbus-eth1"

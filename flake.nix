@@ -15,11 +15,10 @@
     # git+https, NOT github: — the github: scheme does not carry submodules
     # (NixOS/nix#14982) and nimbus' nix/default.nix asserts on `self.submodules`.
     # Needs Nix >= 2.27 for the flake-level `self = { submodules = true; }`.
-    # Pinned to a REV, not a tag: v0.4.2 predates #4921 (batched eth_getProof
-    # for EVM storage reads, the fix for "Unable to get slot", #4870) and #4918.
-    # Move back to a tag once one carries them. #4828 moved sync to the host:
+    # v0.4.4 is the first tag with #4921 (batched eth_getProof, #4870), #4918
+    # and #4984 (convHeader's Amsterdam fields). #4828 moved sync to the host:
     # see nvp_eth_sync.
-    nimbus-eth1.url = "git+https://github.com/status-im/nimbus-eth1?submodules=1&rev=f7bb2582703e58d6e6f8e9591149755aa9e7b29b";
+    nimbus-eth1.url = "git+https://github.com/status-im/nimbus-eth1?submodules=1&ref=refs/tags/v0.4.4";
   };
 
   outputs = inputs@{ self, logos-module-builder, logos-nix, nimbus-eth1 }:
@@ -92,12 +91,7 @@
           pname = "libverifproxy";
 
           # Upstream's patchPhase runs no hooks, so `patches`/postPatch would be ignored.
-          patchPhase = old.patchPhase + ''
-            # convHeader drops the Glamsterdam header fields, so a post-fork block
-            # never hashes to its own hash and #4918's anchor check rejects it.
-            # Drop once status-im/nimbus-eth1#4984 lands.
-            patch -p1 -i ${./patches/nimbus-convheader-glamsterdam.patch}
-          '' + lib.optionalString isWin ''
+          patchPhase = old.patchPhase + lib.optionalString isWin ''
             # nim-bearssl copies and patches its csources at compile time through
             # `nim e`, which the cross wrapper runs as Windows: every path it builds
             # is joined with backslashes. Patch them in place and use that tree.
