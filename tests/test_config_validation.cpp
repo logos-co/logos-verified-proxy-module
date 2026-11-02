@@ -330,6 +330,40 @@ LOGOS_TEST(config_never_overrides_endpoints_the_caller_supplied) {
     LOGOS_ASSERT_EQ(out.executionApiUrls[0], std::string("https://my.exec.example"));
 }
 
+// ── retired defaults ────────────────────────────────────────────────────────
+
+LOGOS_TEST(a_persisted_retired_default_moves_to_the_current_one) {
+    const std::string retired = "https://ethereum-sepolia-rpc.publicnode.com";
+    for (const json& urls : { json::array({ retired }), json(retired) }) {
+        json c = baseConfig();
+        c["executionApiUrls"] = urls;
+        LOGOS_ASSERT_TRUE(migrateRetiredDefaults(c));
+        LOGOS_ASSERT_TRUE(c["executionApiUrls"]
+                          == json::array({ networkProfile("sepolia")->executionApiUrl }));
+        LOGOS_ASSERT_TRUE(c["executionApiUrls"][0].get<std::string>() != retired);
+    }
+}
+
+LOGOS_TEST(a_persisted_list_a_user_chose_is_left_alone) {
+    const std::string retired = "https://ethereum-sepolia-rpc.publicnode.com";
+    const json lists[] = {
+        json::array({ retired, "https://my.exec.example" }),   // not the default alone
+        json::array({ "https://my.exec.example" }),
+    };
+    for (const json& urls : lists) {
+        json c = baseConfig();
+        c["executionApiUrls"] = urls;
+        LOGOS_ASSERT_FALSE(migrateRetiredDefaults(c));
+        LOGOS_ASSERT_TRUE(c["executionApiUrls"] == urls);
+    }
+    json other = baseConfig();
+    other["network"] = "mainnet";                                // another network's URL
+    other["executionApiUrls"] = json::array({ retired });
+    LOGOS_ASSERT_FALSE(migrateRetiredDefaults(other));
+    json bare = json::object();
+    LOGOS_ASSERT_FALSE(migrateRetiredDefaults(bare));
+}
+
 LOGOS_TEST(config_still_rejects_an_explicitly_empty_endpoint_list) {
     // Absent means "use the defaults"; an explicit [] is the caller saying
     // "none", which is a mistake worth reporting rather than papering over.

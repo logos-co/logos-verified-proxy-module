@@ -62,6 +62,10 @@ std::vector<std::string> beaconUrlsFromModule(const nlohmann::json& answer, std:
 /// URLs as getConfig() shows them, with credentials redacted.
 nlohmann::json redactedUrls(const std::vector<std::string>& urls);
 
+/// Moves a persisted config off an execution default this module has since
+/// retired, when that default is its whole list. Returns true if it changed it.
+bool migrateRetiredDefaults(nlohmann::json& persisted);
+
 struct ProxyConfig {
     // ── Required ─────────────────────────────────────────────────────────
     std::string network = "mainnet";     // -> eth2Network

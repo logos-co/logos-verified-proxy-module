@@ -91,7 +91,8 @@ void VerifiedProxyImpl::onContextReady() {
     const std::string text = readFile(p);
     if (text.empty()) return;
     try {
-        const json j = json::parse(text);
+        json j = json::parse(text);
+        migrateRetiredDefaults(j);
         if (configure(j).success && j.value("autoStart", false)) start();
     } catch (const std::exception&) {
         // A corrupt persisted config must not stop the module from loading;
