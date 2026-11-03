@@ -69,6 +69,11 @@ const std::set<std::string>& kLogFormats() {
     return v;
 }
 
+const std::set<std::string>& kBeaconSources() {
+    static const std::set<std::string> v{ "module", "urls" };
+    return v;
+}
+
 const std::set<std::string>& kKeepAliveModes() {
     static const std::set<std::string> v{ "off", "interval", "continuous" };
     return v;
@@ -210,6 +215,36 @@ json urlsRedacted(const std::vector<std::string>& v) {
 
 } // namespace
 
+json redactedUrls(const std::vector<std::string>& urls) { return urlsRedacted(urls); }
+
+std::vector<std::string> beaconUrlsFromModule(const json& answer, std::string& err) {
+    err.clear();
+    if (!answer.is_object() || !answer.value("ok", false) || !answer.contains("config")
+        || !answer["config"].is_object()) {
+        err = answer.is_object() ? answer.value("error", std::string("malformed answer"))
+                                 : std::string("malformed answer");
+        return {};
+    }
+    const json& c = answer["config"];
+    // The library has its own HTTP client and no proxy support, so it would
+    // send in the clear what the module was told to send through a proxy.
+    if (c.value("proxyRequired", false)
+        || (c.contains("proxy") && c["proxy"].is_string() && !c["proxy"].get<std::string>().empty())) {
+        err = "this chain is set to go through a proxy there, which the verified proxy cannot use";
+        return {};
+    }
+    std::vector<std::string> urls;
+    for (const auto& p : c.value("providers", json::array()))
+        if (p.is_object() && p.value("enabled", false) && p.contains("endpoint") && p["endpoint"].is_string())
+            urls.push_back(p["endpoint"].get<std::string>());
+    if (urls.empty()) {
+        err = "no enabled provider for this chain";
+        return {};
+    }
+    if (!validateUrls(urls, "beacon_api_module provider", true, err)) return {};
+    return urls;
+}
+
 bool ProxyConfig::fromJson(const json& in, ProxyConfig& out, std::string& err) {
     err.clear();
     out = ProxyConfig{};
@@ -251,6 +286,11 @@ bool ProxyConfig::fromJson(const json& in, ProxyConfig& out, std::string& err) {
     // substituting a default for a value someone deliberately wrote would hide
     // their mistake rather than fix it.
     if (const NetworkProfile* p = networkProfile(out.network)) {
+        if (!in.contains("beaconSource")) {
+            const bool edited = in.contains("beaconApiUrls")
+                && out.beaconApiUrls != std::vector<std::string>{ p->beaconApiUrl };
+            out.beaconSource = edited ? "urls" : "module";
+        }
         if (!in.contains("beaconApiUrls") && !p->beaconApiUrl.empty())
             out.beaconApiUrls = { p->beaconApiUrl };
         if (!in.contains("executionApiUrls") && !p->executionApiUrl.empty())
@@ -261,7 +301,8 @@ bool ProxyConfig::fromJson(const json& in, ProxyConfig& out, std::string& err) {
     if (!readStringList(in, "archiveUrls",        out.archiveUrls,        err)) return false;
 
     if (!validateUrls(out.executionApiUrls,   "executionApiUrls",   true,  err)) return false;
-    if (!validateUrls(out.beaconApiUrls,      "beaconApiUrls",      true,  err)) return false;
+    if (!readEnum(in, "beaconSource", kBeaconSources(), out.beaconSource, err)) return false;
+    if (!validateUrls(out.beaconApiUrls, "beaconApiUrls", out.beaconSource == "urls", err)) return false;
     if (!validateUrls(out.opExecutionApiUrls, "opExecutionApiUrls", false, err)) return false;
     if (!validateUrls(out.privateTxUrls,      "privateTxUrls",      false, err)) return false;
     if (!validateUrls(out.archiveUrls,        "archiveUrls",        false, err)) return false;
@@ -363,6 +404,7 @@ json ProxyConfig::asJson(bool redactUrls) const {
     j["chainId"]          = expectedChainId();
     j["executionApiUrls"]   = urls(executionApiUrls);
     j["beaconApiUrls"]      = urls(beaconApiUrls);
+    j["beaconSource"]       = beaconSource;
     j["opExecutionApiUrls"] = urls(opExecutionApiUrls);
     j["privateTxUrls"]      = urls(privateTxUrls);
     j["archiveUrls"]        = urls(archiveUrls);

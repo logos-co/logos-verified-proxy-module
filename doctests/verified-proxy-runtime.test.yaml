@@ -86,6 +86,16 @@ sections:
         extra_run:
           run: "ls proxy-lgx/*.lgx"
 
+      - title: "Build beacon_api_module's .lgx"
+        text: |
+          The proxy takes its beacon provider URLs from `beacon_api_module`,
+          which holds the consensus-layer providers for every app on the device.
+          It is a dependency, so it must be installed too.
+        run: "nix build 'github:logos-co/logos-evm-beacon-api-module#lgx' -o beacon-lgx"
+        code_block: "nix build 'github:logos-co/logos-evm-beacon-api-module#lgx' -o beacon-lgx"
+        extra_run:
+          run: "ls beacon-lgx/*.lgx"
+
   - title: "Start the daemon, install and load the module"
     step: true
     text: |
@@ -110,10 +120,11 @@ sections:
           A path ending in `.lgx` installs from disk, with no catalog involved. A
           local build is unsigned, which the session's default policy accepts with
           a warning. `-y` confirms, since there is no terminal to ask on.
-        run: "./logos/bin/logosctl --config-dir ./session install proxy-lgx/*.lgx -y"
-        code_block: "logosctl install proxy-lgx/*.lgx -y"
+        run: "./logos/bin/logosctl --config-dir ./session install beacon-lgx/*.lgx proxy-lgx/*.lgx -y"
+        code_block: "logosctl install beacon-lgx/*.lgx proxy-lgx/*.lgx -y"
         expect_contains:
-          - '"installed":["verified_proxy_module"]'
+          - "verified_proxy_module"
+          - "beacon_api_module"
         check_file: "session/modules/verified_proxy_module/manifest.json"
 
       - title: "Load the module"
@@ -226,12 +237,15 @@ sections:
       - title: "Check the state"
         text: |
           `running`, with the chain id the light client actually verified against
-          — not merely the one we asked for.
+          — not merely the one we asked for. `beacon` shows the provider URLs
+          this run took from `beacon_api_module`.
         run: "./logos/bin/logosctl --config-dir ./session call verified_proxy_module status"
         code_block: "logosctl call verified_proxy_module status"
         expect_contains:
           - '"state":"running"'
           - "11155111"
+          - '"source":"module"'
+          - "lodestar-sepolia.chainsafe.io"
 
       - title: "A verified block number"
         run: "./logos/bin/logosctl --config-dir ./session call verified_proxy_module ethBlockNumber"

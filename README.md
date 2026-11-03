@@ -23,7 +23,7 @@ Get a trusted block root — this is the root of trust, so take it from a source
 you trust, not from the same provider you are about to verify:
 
 ```bash
-curl -s https://beaconstate.info/eth/v1/beacon/headers/finalized | jq -r '.data.root'
+curl -s https://lodestar-mainnet.chainsafe.io/eth/v1/beacon/headers/finalized | jq -r '.data.root'
 ```
 
 `config.json`:
@@ -32,10 +32,14 @@ curl -s https://beaconstate.info/eth/v1/beacon/headers/finalized | jq -r '.data.
 {
   "network": "mainnet",
   "trustedBlockRoot": "0x...",
-  "executionApiUrls": ["wss://eth-mainnet.example/v2/<key>"],
-  "beaconApiUrls":    ["https://beaconstate.info"]
+  "executionApiUrls": ["wss://eth-mainnet.example/v2/<key>"]
 }
 ```
+
+The beacon (light-client) providers are the ones configured in
+[`beacon_api_module`](https://github.com/logos-co/logos-evm-beacon-api-module). It is
+a dependency: install its `.lgx` next to this one and it loads with it — see
+[Where beacon data comes from](#where-beacon-data-comes-from).
 
 Then:
 
@@ -139,10 +143,39 @@ answers *state* queries, so exposing it beyond `127.0.0.1` is a deliberate act.
 There is no authentication: treat a non-loopback bind as publishing an open RPC
 node.
 
+## Where beacon data comes from
+
+`beaconSource` picks it:
+
+* **`module`** (the default): the URLs of the providers enabled in
+  `beacon_api_module`, which holds the consensus-layer providers for every app
+  on the device. They are read over IPC at `start()` and handed to the library,
+  which fetches from them itself; a change in `beacon_api_module` applies on the
+  next start.
+* **`urls`**: `beaconApiUrls`, as before 0.2.0.
+
+When `beaconSource` is absent, a config whose `beaconApiUrls` is the network
+default resolves to `module`, and one with URLs a user typed keeps `urls`, so
+nobody's own provider is replaced silently. `status().beacon` shows the source
+and the URLs the last successful `start()` used.
+
+The library makes these requests with its own HTTP client, so
+`beacon_api_module`'s failover does not apply. Each URL is a backend that the
+library scores, and it picks one at random among those in good standing. A
+failed request is not retried elsewhere; the light client asks again on its
+next sync. The library cannot use a proxy either, so `start()` refuses a chain
+that `beacon_api_module` sends through one (`proxy` or `proxyRequired`) rather
+than send that traffic in the clear.
+
+Trust does not change: the light client checks sync-committee signatures from
+the trusted root on, so the providers can withhold or delay data but not forge
+it, which is also why plain-http providers are acceptable here.
+
 ## Configuration
 
-Required: `trustedBlockRoot` (`0x` + 64 hex), `executionApiUrls`,
-`beaconApiUrls`. `network` is one of `mainnet`, `sepolia`, `hoodi`. OP-Stack L2
+Required: `trustedBlockRoot` (`0x` + 64 hex) and `executionApiUrls`, plus
+`beaconApiUrls` when `beaconSource` is `urls`. `network` is one of `mainnet`,
+`sepolia`, `hoodi`. OP-Stack L2
 is enabled by setting `opExecutionApiUrls` (there is no `op-*` network name in
 the library's JSON config — that is a CLI-only option on the standalone binary).
 

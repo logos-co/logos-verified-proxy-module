@@ -54,12 +54,28 @@ constexpr int64_t kBeaconSlotMs = 12000;
 /// Lookup by name, or nullptr when the network is not supported.
 const NetworkProfile* networkProfile(const std::string& name);
 
+/// The beacon URLs for the library from a beacon_api_module `get_beacon_config`
+/// answer: the enabled providers, in order. Empty, with `err` set, when there
+/// are none or the chain goes through a proxy, which the library cannot use.
+std::vector<std::string> beaconUrlsFromModule(const nlohmann::json& answer, std::string& err);
+
+/// URLs as getConfig() shows them, with credentials redacted.
+nlohmann::json redactedUrls(const std::vector<std::string>& urls);
+
 struct ProxyConfig {
     // ── Required ─────────────────────────────────────────────────────────
     std::string network = "mainnet";     // -> eth2Network
     std::string trustedBlockRoot;        // 0x + 64 hex
     std::vector<std::string> executionApiUrls;
     std::vector<std::string> beaconApiUrls;
+
+    // ── Beacon source ────────────────────────────────────────────────────
+    /// "module": the library fetches from the providers enabled in
+    /// beacon_api_module, read at start(). "urls": from `beaconApiUrls`. When
+    /// absent, a config whose `beaconApiUrls` is the network default resolves
+    /// to "module", and one a user edited keeps "urls", so nobody's hand-set
+    /// provider is replaced silently.
+    std::string beaconSource = "module";
 
     // ── Optional backends ────────────────────────────────────────────────
     // OP-Stack L2 is enabled by SETTING opExecutionApiUrls, not by naming an

@@ -3,12 +3,14 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include <logos_json.h>
 #include <logos_module_context.h>
 #include <logos_result.h>
 
 struct ProxyConfig;
+class BeaconBridge;
 class ProxyRuntime;
 class RpcHttpServer;
 
@@ -37,9 +39,10 @@ public:
 
     /// Validate and store the proxy configuration. Synchronous; starts nothing.
     ///
-    /// Required: `trustedBlockRoot` (0x + 64 hex), `executionApiUrls` and
-    /// `beaconApiUrls` (arrays of http/https/ws/wss URLs). The provider must
-    /// support `eth_getProof`.
+    /// Required: `trustedBlockRoot` (0x + 64 hex) and `executionApiUrls`
+    /// (http/https/ws/wss URLs; the provider must support `eth_getProof`).
+    /// `beaconSource` is "module" (the providers enabled in beacon_api_module,
+    /// the default) or "urls" (`beaconApiUrls`).
     ///
     /// `network` is one of mainnet, sepolia, hoodi — enforced here, because an
     /// unrecognised value reaches a `quit()` inside the library and would take
@@ -51,7 +54,8 @@ public:
     ///   "network": "mainnet",
     ///   "trustedBlockRoot": "0x...",
     ///   "executionApiUrls": ["wss://..."],
-    ///   "beaconApiUrls": ["https://..."],
+    ///   "beaconSource": "module",
+    ///   "beaconApiUrls": ["https://..."],                       // "urls" only
     ///   "opExecutionApiUrls": [], "privateTxUrls": [], "archiveUrls": [],
     ///   "logLevel": "INFO", "logFormat": "Json",
     ///   "tuning": { "maxBlockWalk": 1000, "headerStoreLen": 256 },
@@ -531,5 +535,7 @@ private:
     std::unique_ptr<ProxyConfig> m_cfg;
     std::unique_ptr<ProxyRuntime> m_rt;
     std::unique_ptr<RpcHttpServer> m_http;
+    std::shared_ptr<BeaconBridge> m_beacon;
+    std::vector<std::string> m_beaconUrls;   // what the last successful start() used
     bool m_configured = false;
 };

@@ -29,6 +29,8 @@ logos_module(
         src/rpc_http_server.cpp
         src/beacon_client.h
         src/beacon_client.cpp
+        src/beacon_bridge.h
+        src/beacon_bridge_module.cpp
     EXTERNAL_LIBS
         verifproxy
     INCLUDE_DIRS
