@@ -8,6 +8,7 @@
 #include <sstream>
 #include <system_error>
 
+#include "beacon_bridge.h"
 #include "beacon_client.h"
 #include "proxy_config.h"
 #include "proxy_runtime.h"
@@ -175,7 +176,23 @@ StdLogosResult VerifiedProxyImpl::start() {
     if (!m_configured)
         return { false, {}, "not configured — call configure() first" };
 
-    auto r = m_rt->start(*m_cfg);
+    if (m_rt->live())
+        return { false, {}, "proxy already started" };
+
+    // Module mode: the provider list is read now and fixed for this run. A
+    // change in beacon_api_module applies on the next start.
+    ProxyConfig cfg = *m_cfg;
+    if (cfg.beaconSource == "module") {
+        if (!m_beacon) m_beacon = makeModuleBeaconBridge(*this);
+        std::string err;
+        auto urls = m_beacon->urls(cfg.expectedChainId(), err);
+        if (urls.empty())
+            return { false, {}, "cannot start with beaconSource \"module\": " + err };
+        cfg.beaconApiUrls = std::move(urls);
+    }
+
+    auto r = m_rt->start(cfg);
+    if (r.success) m_beaconUrls = cfg.beaconApiUrls;
     if (!r.success || !m_cfg->httpEnabled) return r;
 
     // Forward every HTTP request through the SAME verified path the typed
@@ -231,6 +248,10 @@ LogosMap VerifiedProxyImpl::status() {
     if (m_configured && m_cfg) {
         s["network"] = m_cfg->network;
         s["chainId"] = m_cfg->expectedChainId();
+        s["beacon"] = json{
+            { "source", m_cfg->beaconSource },
+            { "urls", redactedUrls(m_beaconUrls) },   // as of the last successful start()
+        };
     }
     s["moduleVersion"] = VERIFIED_PROXY_MODULE_VERSION;
     s["libraryVersion"] = VERIFIED_PROXY_NIMBUS_REV;

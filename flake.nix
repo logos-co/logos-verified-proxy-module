@@ -12,6 +12,13 @@
     logos-module-builder.url = "github:logos-co/logos-module-builder";
     logos-nix.url = "github:logos-co/logos-nix";
 
+    # The default beacon source: the consensus-layer providers configured in one
+    # place. Consumed as its LIDL contract.
+    beacon_api_module = {
+      url = "github:logos-co/logos-evm-beacon-api-module";
+      inputs.logos-module-builder.follows = "logos-module-builder";
+    };
+
     # git+https, NOT github: — the github: scheme does not carry submodules
     # (NixOS/nix#14982) and nimbus' nix/default.nix asserts on `self.submodules`.
     # Needs Nix >= 2.27 for the flake-level `self = { submodules = true; }`.
@@ -21,7 +28,7 @@
     nimbus-eth1.url = "git+https://github.com/status-im/nimbus-eth1?submodules=1&ref=refs/tags/v0.4.4";
   };
 
-  outputs = inputs@{ self, logos-module-builder, logos-nix, nimbus-eth1 }:
+  outputs = inputs@{ self, logos-module-builder, logos-nix, nimbus-eth1, ... }:
     let
       nixpkgs = logos-nix.inputs.nixpkgs;
       lib = nixpkgs.lib;

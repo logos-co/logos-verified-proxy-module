@@ -1,7 +1,7 @@
 {
   "name": "verified_proxy_module",
   "display_name": "Verified Proxy Module",
-  "version": "0.1.5",
+  "version": "0.1.7",
   "description": "Light-client-verified Ethereum JSON-RPC, wrapping nimbus libverifproxy",
   "author": "Logos Core Team",
   "type": "core",
@@ -14,7 +14,9 @@
     "impl_header": "verified_proxy_impl.h",
     "impl_class": "VerifiedProxyImpl"
   },
-  "dependencies": [],
+  "dependencies": [
+    { "name": "beacon_api_module", "version": "~0.1.0" }
+  ],
   "include": [],
   "capabilities": [],
   "nix": {
