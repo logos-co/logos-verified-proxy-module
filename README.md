@@ -152,7 +152,7 @@ node.
   on the device. They are read over IPC at `start()` and handed to the library,
   which fetches from them itself; a change in `beacon_api_module` applies on the
   next start.
-* **`urls`**: `beaconApiUrls`, as before 0.2.0.
+* **`urls`**: `beaconApiUrls`, as before 0.1.7.
 
 When `beaconSource` is absent, a config whose `beaconApiUrls` is the network
 default resolves to `module`, and one with URLs a user typed keeps `urls`, so
