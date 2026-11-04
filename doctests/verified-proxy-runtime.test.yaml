@@ -218,7 +218,7 @@ sections:
         code_block: "logosctl call verified_proxy_module getConfig"
         expect_contains:
           - "lodestar-sepolia.chainsafe.io"
-          - "ethereum-sepolia-rpc.publicnode.com"
+          - "rpc.sepolia.ethpandaops.io"
 
   - title: "Start the light client and make verified calls"
     step: true
@@ -263,14 +263,14 @@ sections:
           VERIFIED=$(./logos/bin/logosctl --config-dir ./session call verified_proxy_module ethBlockNumber | jq -r '.result.value')
           PROVIDER=$(curl -s -X POST -H 'Content-Type: application/json' \
             --data '{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}' \
-            https://ethereum-sepolia-rpc.publicnode.com | jq -r '.result')
+            https://rpc.sepolia.ethpandaops.io | jq -r '.result')
           echo "verified: $VERIFIED"
           echo "provider: $((PROVIDER)) ($PROVIDER)"
         code_block: |
           logosctl call verified_proxy_module ethBlockNumber | jq -r '.result.value'
           curl -s -X POST -H 'Content-Type: application/json' \
             --data '{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}' \
-            https://ethereum-sepolia-rpc.publicnode.com | jq -r '.result'
+            https://rpc.sepolia.ethpandaops.io | jq -r '.result'
         expect_contains:
           - "verified:"
           - "provider:"

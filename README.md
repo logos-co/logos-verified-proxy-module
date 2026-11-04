@@ -321,13 +321,17 @@ single `eth_blockNumber` in that run took **12.6 s**, against a 30 s default
 
 * **State reads need a provider with a wide proof window.** `eth_getBalance`,
   `eth_getCode` and `eth_getTransactionCount` resolve their proof against the
-  light client's *finalized* header, which lags the chain head. Against free
-  public sepolia providers this exceeds their `eth_getProof` window and the call
-  fails with `distance to target block exceeds maximum proof window`; the
-  backend is then marked ineligible for `GetProof` until it recovers. Reads that
-  need no proof (`eth_blockNumber`, `eth_chainId`, `eth_gasPrice`,
-  `eth_getBlockByNumber`) work fine. Point `archiveUrls` at a provider that
-  serves historical proofs.
+  light client's *finalized* header, which lags the chain head. Most free
+  providers prune proofs past a few dozen blocks, and then the call fails with
+  `distance to target block exceeds maximum proof window`; the backend is then
+  marked ineligible for `GetProof` until it recovers. The defaults were measured
+  against this (2026-11): sepolia's (ethpandaops) and hoodi's keep full proof
+  history; mainnet's (drpc, free tier) reaches about 96 blocks, enough for
+  `finalized`, not for older blocks. Reads that need no proof (`eth_blockNumber`,
+  `eth_chainId`, `eth_gasPrice`, `eth_getBlockByNumber`) work anywhere. Point
+  `archiveUrls` at a provider that serves historical proofs. A config saved with
+  a retired default (sepolia's publicnode, before 0.1.8) moves to the current
+  one when it is loaded.
 * **Return encodings are not uniform.** `eth_blockNumber` answers a JSON
   *number*; `eth_chainId` and `eth_gasPrice` answer hex *strings*;
   `eth_getBlockByNumber` and `eth_syncing` answer objects. There is no

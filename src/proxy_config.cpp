@@ -16,19 +16,17 @@ const std::vector<NetworkProfile>& networkProfiles() {
     static const std::vector<NetworkProfile> v{
         { "mainnet", 1,
           "https://lodestar-mainnet.chainsafe.io",
-          // drpc is archive-capable: it answered eth_getProof deep in history,
-          // where the pruning free tiers refuse anything past ~head-1024. That
-          // matters here specifically, because the light client verifies
-          // against its FINALIZED header, which lags the chain head — a pruned
-          // provider makes state reads fail with "distance to target block
-          // exceeds maximum proof window" long after start() reported success.
+          // State reads need proofs at the FINALIZED header, which lags the head;
+          // a pruned provider fails them with "distance to target block exceeds
+          // maximum proof window" long after start() succeeded. drpc's free tier
+          // reaches ~96 blocks (2026-11), enough for that; no free mainnet
+          // endpoint that serves every method the proxy needs reaches further.
           "https://eth.drpc.org" },
         { "sepolia", 11155111,
           "https://lodestar-sepolia.chainsafe.io",
-          // dRPC's sepolia endpoint is behind a paid plan, so this one stays on
-          // publicnode — the pair a full light-client sync and verified calls
-          // have actually run against.
-          "https://ethereum-sepolia-rpc.publicnode.com" },
+          // The Ethereum Foundation devops node keeps full proof history. dRPC's
+          // sepolia is paid, and publicnode's proof window is under 8 blocks.
+          "https://rpc.sepolia.ethpandaops.io" },
         { "hoodi", 560048,
           "https://lodestar-hoodi.chainsafe.io",
           "https://hoodi.drpc.org" },
@@ -40,6 +38,25 @@ const NetworkProfile* networkProfile(const std::string& name) {
     for (const auto& p : networkProfiles())
         if (p.name == name) return &p;
     return nullptr;
+}
+
+bool migrateRetiredDefaults(json& persisted) {
+    static const std::vector<std::pair<std::string, std::string>> retired{
+        { "sepolia", "https://ethereum-sepolia-rpc.publicnode.com" },
+    };
+    if (!persisted.is_object() || !persisted.contains("executionApiUrls")) return false;
+    const json& urls = persisted["executionApiUrls"];
+    const std::string only = urls.is_string() ? urls.get<std::string>()
+        : (urls.is_array() && urls.size() == 1 && urls[0].is_string()) ? urls[0].get<std::string>()
+        : std::string();
+    const std::string network = persisted.value("network", std::string());
+    for (const auto& [net, url] : retired) {
+        const NetworkProfile* p = networkProfile(net);
+        if (net != network || url != only || !p || p->executionApiUrl.empty()) continue;
+        persisted["executionApiUrls"] = json::array({ p->executionApiUrl });
+        return true;
+    }
+    return false;
 }
 
 namespace {
