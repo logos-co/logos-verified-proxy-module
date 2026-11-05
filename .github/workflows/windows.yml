@@ -27,17 +27,19 @@ jobs:
       # after the first is dropped SILENTLY. Caught here only because min-pes
       # then found no PE, and the message it prints ("a target installed
       # nothing") points at the wrong cause.
-      targets: libverifproxy default
+      targets: libverifproxy default unit-tests
       # `default` stages verified_proxy_module_plugin.dll, so the loose-PE floor
       # is met; the archive floor keeps libverifproxy's own tree honest, since a
       # target that staged nothing would otherwise hide behind the other one.
       min-pes: 1
       min-archives: 1
-      # NO SMOKE, and that is a coverage gap rather than a pass. A Logos module
-      # plugin has no entry point of its own -- it is loaded by a host, and this
-      # repo exposes no Windows host target to load it with. What the harness
-      # still proves without one is the PE format and the import closure, which
-      # is where a bundled-DLL mistake shows up.
+      # The unit tests run natively, from the manifest `unit-tests` ships
+      # (libverifproxy is mocked there, as on Linux and macOS).
+      tests: true
+      # NO SMOKE. A Logos module plugin has no entry point of its own -- it is
+      # loaded by a host, and this repo exposes no Windows host target to load
+      # it with. What the harness still proves about the plugin is the PE format
+      # and the import closure, which is where a bundled-DLL mistake shows up.
       #
       # The archive gate adds what neither covers: that the library target
       # actually emitted its entry points. Upstream's installPhase collects only
