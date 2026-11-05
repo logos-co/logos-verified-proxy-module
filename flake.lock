@@ -7,11 +7,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1793665602,
-        "narHash": "sha256-Sh6zEWYkKwoWtmpZcZo9TjtjEOt1Taesux8HMPB0Wi0=",
+        "lastModified": 1793890771,
+        "narHash": "sha256-GJXHmtaHbQ9qsEjRAlKYeK3g0HuDrA6QjLUBPa7B48Q=",
         "owner": "logos-co",
         "repo": "logos-evm-beacon-api-module",
-        "rev": "18c2a731c4f788d30b08104cd9a17fad7662c757",
+        "rev": "aca138e5c211a370654700f4f8f2779ea5081c86",
         "type": "github"
       },
       "original": {
