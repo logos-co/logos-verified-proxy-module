@@ -1,7 +1,7 @@
 # logos-verified-proxy-module
 
 Light-client-verified Ethereum JSON-RPC for Logos, wrapping status-im's
-[`nimbus_verified_proxy`](https://github.com/status-im/nimbus-eth1/tree/master/nimbus_verified_proxy)
+[`nimbus_verified_proxy`](https://github.com/status-im/nimbus-eth1/tree/master/verified_proxy)
 in its C library form (`libverifproxy`).
 
 An ordinary RPC client forwards a request to a provider and **trusts the answer**.
@@ -387,12 +387,12 @@ nix run github:logos-co/logos-doctest -- run doctests/verified-proxy-runtime.tes
 
 ## Which Nim builds the library
 
-Nim 2.2.12 — the compiler nimbus-eth1 builds itself with, from the pinned rev's
-`vendor/nimbus-build-system` submodule. nimbus-eth1's own `flake.lock` locked
-nimbus-build-system at 2.2.10 for a month after the submodule moved in
+Nim 2.2.14 — the compiler nimbus-eth1 builds itself with, from its own
+`nimbusBuildSystem` flake input. Evaluation fails if that input's Nim differs
+from the pinned rev's `vendor/nimbus-build-system` submodule, which nimbus'
+Makefile uses: the lock sat at 2.2.10 for a month after the submodule moved in
 [nimbus-eth1#4761][nimbus-4761] (it caught up in #4954), and taking the
-compiler from that flake built with 2.2.10. This flake builds it from the
-submodule instead, so a nimbus bump that moves Nim moves it here too.
+compiler from the flake then built with 2.2.10.
 
 2.2.10 corrupts the refc heap. It resets a case object by zeroing only the
 active branch ([nim-lang/Nim#25992][nim-25992]), leaving stale bytes in the rest

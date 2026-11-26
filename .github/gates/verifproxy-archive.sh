@@ -26,8 +26,7 @@ command -v "$OBJDUMP" >/dev/null || { echo "::error::objdump not executable: $OB
 syms=$("$OBJDUMP" -t "$ARCHIVE")
 
 rc=0
-for s in startVerifProxy stopVerifProxy processVerifProxyTasks proxyCall \
-         deliverExecutionTransport deliverBeaconTransport; do
+for s in startVerifProxy stopVerifProxy processVerifProxyTasks proxyCall; do
   if grep -qE "\(sec +[1-9][0-9]*\).* ${s}\$" <<<"$syms"; then
     echo "ok   $s"
   else

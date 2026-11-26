@@ -364,7 +364,8 @@ void ProxyRuntime::runOnce() {
         m_lastSyncedAt = 0;
     }
 
-    m_ctx = ::startVerifProxy(m_upstreamJson.data(), nullptr, nullptr);
+    // No checkpoint storage: every run bootstraps from trustedBlockRoot, as before #5103.
+    m_ctx = ::startVerifProxy(m_upstreamJson.data(), nullptr, nullptr, nullptr, nullptr);
 
     if (!m_ctx) {
         {

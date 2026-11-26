@@ -10,7 +10,7 @@ would not see anything hidden behind a macro.
 Run with --check in CI to prove the committed blocks still match.
 
 The table below was extracted mechanically from nimbus-eth1's
-nimbus_verified_proxy/library/c_frontend.nim (the `case $name` inside proxyCall)
+verified_proxy/library/c_frontend.nim (the `case $name` inside proxyCall)
 at the revision this module pins. Re-extract with --from-source <c_frontend.nim>
 after bumping that input.
 """

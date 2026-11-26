@@ -128,7 +128,9 @@ extern "C" void NimMain(void) {
 
 extern "C" Context* startVerifProxy(char* /*configJson*/,
                                     ExecutionTransportProc,
-                                    BeaconTransportProc) {
+                                    BeaconTransportProc,
+                                    StorageGetProc,
+                                    StoragePutProc) {
     LOGOS_CMOCK_RECORD("startVerifProxy");
     observe("startVerifProxy");
 

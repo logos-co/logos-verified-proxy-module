@@ -7,7 +7,7 @@ intro: |
   source.
 
   Ordinary RPC asks a provider for an answer and believes it. This module runs
-  [nimbus's verified proxy](https://github.com/status-im/nimbus-eth1/tree/master/nimbus_verified_proxy)
+  [nimbus's verified proxy](https://github.com/status-im/nimbus-eth1/tree/master/verified_proxy)
   instead: it syncs the beacon-chain light client from a trusted block root and
   verifies every `eth_*` response against the attested execution state,
   requesting Merkle proofs from the provider it does not trust.
