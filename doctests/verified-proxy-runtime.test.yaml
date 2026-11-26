@@ -288,6 +288,44 @@ sections:
         expect_contains:
           - '"success":true'
 
+  - title: "Restart from the stored checkpoint"
+    step: true
+    text: |
+      Every sync that moves the finalized header hands the light client's
+      checkpoint (that header and its sync committee) to the module, which keeps
+      it in its instance directory next to `config.json`. A restarted module
+      restores it instead of bootstrapping from the trusted root again.
+    steps:
+      - title: "The first run saved one"
+        run: "./logos/bin/logosctl --config-dir ./session call verified_proxy_module status | jq -c '.result.checkpoint | {enabled, found, saved: (.saves > 0)}'"
+        code_block: "logosctl call verified_proxy_module status | jq '.result.checkpoint'"
+        expect_contains:
+          - '{"enabled":true,"found":false,"saved":true}'
+
+      - title: "Stop the proxy and restart the module"
+        text: |
+          `module reload` replaces the module's process. Its configuration comes
+          back from `config.json`, so only `start` is left to do.
+        run: |
+          ./logos/bin/logosctl --config-dir ./session call verified_proxy_module stop
+          ./logos/bin/logosctl --config-dir ./session module reload verified_proxy_module
+        code_block: |
+          logosctl call verified_proxy_module stop
+          logosctl module reload verified_proxy_module
+
+      - title: "Start again"
+        run: "./logos/bin/logosctl --config-dir ./session call verified_proxy_module start"
+        code_block: "logosctl call verified_proxy_module start"
+        expect_contains:
+          - '"success":true'
+          - "chainId"
+
+      - title: "This run restored the checkpoint"
+        run: "./logos/bin/logosctl --config-dir ./session call verified_proxy_module status | jq -c '.result.checkpoint | {found}'"
+        code_block: "logosctl call verified_proxy_module status | jq '.result.checkpoint'"
+        expect_contains:
+          - '{"found":true}'
+
   - title: "Shut down"
     step: true
     steps:

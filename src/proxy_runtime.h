@@ -8,6 +8,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -15,6 +16,7 @@
 #include <nlohmann/json.hpp>
 #include <logos_result.h>
 
+#include "checkpoint_store.h"
 #include "proxy_config.h"
 #include "resource_budget.h"
 
@@ -65,7 +67,10 @@ public:
     /// Spin up the proxy thread and wait for `startVerifProxy` to return.
     /// Blocks up to `cfg.startTimeoutMs`. Safe to block: the latch is tripped
     /// by the PROXY thread, never by the caller's own.
-    StdLogosResult start(const ProxyConfig& cfg);
+    ///
+    /// `checkpointDir` keeps the light-client checkpoint across runs; empty
+    /// leaves storage off, so every run bootstraps from trustedBlockRoot.
+    StdLogosResult start(const ProxyConfig& cfg, std::string checkpointDir = {});
 
     /// Drain in-flight calls, then stop and free the context. Idempotent.
     StdLogosResult stop();
@@ -140,6 +145,12 @@ private:
     /// C callback. Runs on the proxy thread; must never let an exception
     /// escape into Nim frames.
     static void callbackTrampoline(Context* ctx, int status, char* result, void* userData);
+
+    /// The storage callbacks' halves, on the proxy thread. Return a RET_* status.
+    friend struct CheckpointCallbacks;
+    int checkpointGet(const char* key, std::string& out);
+    int checkpointPut(const char* key, const uint8_t* data, int len);
+
     void noteHeartbeat(const CallSlot& slot);
     void noteSync(const CallSlot& slot);
     void noteHead(const CallSlot& slot);
@@ -154,6 +165,8 @@ private:
     // ── owned by the proxy thread ────────────────────────────────────────
     Context* m_ctx = nullptr;
     std::string m_upstreamJson;   // must outlive the startVerifProxy call
+    std::string m_checkpointDir;  // set by start(), like m_upstreamJson
+    std::optional<CheckpointStore> m_checkpoints;   // this run's, if any
     std::thread::id m_threadId;
 
     // The sync cycle: nvp_eth_sync, then nvp_op_sync when OP is configured.
@@ -250,6 +263,11 @@ private:
     std::string m_lastSyncError;
     int64_t m_lastSyncedAt = 0;
     int64_t m_startedAt = 0;
+    std::string m_checkpointError;
+    int64_t m_checkpointSavedAt = 0;
+    std::atomic<bool> m_checkpointEnabled{false};
+    std::atomic<bool> m_checkpointFound{false};
+    std::atomic<int64_t> m_checkpointSaves{0};
 
     ProxyConfig m_cfg;
     EmitFn m_emit;

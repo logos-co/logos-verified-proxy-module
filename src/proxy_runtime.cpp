@@ -106,6 +106,31 @@ struct CallBox {
     ProxyRuntime* rt;
 };
 
+namespace {
+// The storage callbacks carry only the library's own userData, so they find
+// their runtime through the one proxy thread every library call runs on.
+thread_local ProxyRuntime* t_runtime = nullptr;
+} // namespace
+
+// Both answer synchronously: the library completes a future it awaits next,
+// and copies a get's bytes before cb returns.
+struct CheckpointCallbacks {
+    static void get(Context*, const char* key, StorageDeliveryCallback cb, void* userData) {
+        std::string bytes;
+        int status = RET_ERROR;
+        try { if (t_runtime) status = t_runtime->checkpointGet(key, bytes); } catch (...) {}
+        const bool ok = status == RET_SUCCESS;
+        cb(status, ok ? reinterpret_cast<const uint8_t*>(bytes.data()) : nullptr,
+           ok ? static_cast<int>(bytes.size()) : 0, userData);
+    }
+    static void put(Context*, const char* key, const uint8_t* data, int len,
+                    StorageDeliveryCallback cb, void* userData) {
+        int status = RET_ERROR;
+        try { if (t_runtime) status = t_runtime->checkpointPut(key, data, len); } catch (...) {}
+        cb(status, nullptr, 0, userData);
+    }
+};
+
 const char* ProxyRuntime::stateName(State s) {
     switch (s) {
         case State::Idle:     return "uninitialized";
@@ -196,7 +221,7 @@ bool ProxyRuntime::keepAliveEnabled() const { return m_cfg.keepAlive != "off"; }
 // Lifecycle
 // ---------------------------------------------------------------------------
 
-StdLogosResult ProxyRuntime::start(const ProxyConfig& cfg) {
+StdLogosResult ProxyRuntime::start(const ProxyConfig& cfg, std::string checkpointDir) {
     if (m_runActive.load())
         return { false, {}, "proxy already started" };
 
@@ -211,6 +236,7 @@ StdLogosResult ProxyRuntime::start(const ProxyConfig& cfg) {
         m_admitted = 0;
         m_cfg = cfg;
         m_upstreamJson = cfg.toUpstreamJson();
+        m_checkpointDir = std::move(checkpointDir);
         m_stopRequested = false;
     }
     m_admissionCv.notify_all();
@@ -319,6 +345,7 @@ StdLogosResult ProxyRuntime::stop() {
 
 void ProxyRuntime::threadMain() {
     m_threadId = std::this_thread::get_id();
+    t_runtime = this;
 
     // NimMain must run before anything else (library/nim.cfg sets --noMain:on),
     // and it binds the Nim runtime to THIS thread for good. Any other thread
@@ -362,10 +389,22 @@ void ProxyRuntime::runOnce() {
         m_headUpdatedAt = 0;
         m_lastSyncError.clear();
         m_lastSyncedAt = 0;
+        m_checkpointError.clear();
+        m_checkpointSavedAt = 0;
     }
 
-    // No checkpoint storage: every run bootstraps from trustedBlockRoot, as before #5103.
-    m_ctx = ::startVerifProxy(m_upstreamJson.data(), nullptr, nullptr, nullptr, nullptr);
+    // With a store, the first sync restores the checkpoint unless it is stale,
+    // and every finalized advance writes it back.
+    m_checkpoints.reset();
+    if (!m_checkpointDir.empty()) m_checkpoints.emplace(m_checkpointDir);
+    const bool store = m_checkpoints.has_value();
+    m_checkpointEnabled = store;
+    m_checkpointFound = false;
+    m_checkpointSaves = 0;
+
+    m_ctx = ::startVerifProxy(m_upstreamJson.data(), nullptr, nullptr,
+                              store ? &CheckpointCallbacks::get : nullptr,
+                              store ? &CheckpointCallbacks::put : nullptr);
 
     if (!m_ctx) {
         {
@@ -482,6 +521,7 @@ void ProxyRuntime::teardown() {
     ::stopVerifProxy(m_ctx);
     ::freeContext(m_ctx);
     m_ctx = nullptr;
+    m_checkpoints.reset();
     m_runActive = false;
     // The C ABI cannot cancel calls. Once the Context is gone no callback can
     // release their reservations, so the run teardown is the authority.
@@ -642,6 +682,33 @@ void ProxyRuntime::callbackTrampoline(Context*, int status, char* result, void* 
     } catch (...) {
         // Never propagate into Nim.
     }
+}
+
+int ProxyRuntime::checkpointGet(const char* key, std::string& out) {
+    if (!m_checkpoints) return RET_ERROR;
+    std::string err;
+    switch (m_checkpoints->get(key ? key : "", out, err)) {
+        case CheckpointStore::Read::Found:    m_checkpointFound = true; return RET_SUCCESS;
+        case CheckpointStore::Read::NotFound: return RET_NOT_FOUND;
+        case CheckpointStore::Read::Failed:   break;
+    }
+    std::lock_guard<std::mutex> lk(m_errMu);
+    m_checkpointError = err;
+    return RET_ERROR;
+}
+
+int ProxyRuntime::checkpointPut(const char* key, const uint8_t* data, int len) {
+    if (!m_checkpoints || len < 0 || (!data && len > 0)) return RET_ERROR;
+    std::string err;
+    const bool ok = m_checkpoints->put(key ? key : "", data, static_cast<size_t>(len), err);
+    std::lock_guard<std::mutex> lk(m_errMu);
+    if (!ok) {
+        m_checkpointError = err;
+        return RET_ERROR;
+    }
+    ++m_checkpointSaves;
+    m_checkpointSavedAt = nowSeconds();
+    return RET_SUCCESS;
 }
 
 void ProxyRuntime::recordPump(int64_t ms, bool busy) {
@@ -1108,6 +1175,13 @@ json ProxyRuntime::statusSnapshot() const {
             { "lastError", m_lastSyncError },
             { "failures", m_syncFailures.load() },
             { "consecutiveFailures", m_syncStreak.load() },
+        };
+        j["checkpoint"] = json{
+            { "enabled", m_checkpointEnabled.load() },
+            { "found", m_checkpointFound.load() },
+            { "saves", m_checkpointSaves.load() },
+            { "savedAt", m_checkpointSavedAt },
+            { "lastError", m_checkpointError },
         };
     }
     j["keepAlive"] = m_cfg.keepAlive;

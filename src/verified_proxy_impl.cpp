@@ -10,6 +10,7 @@
 
 #include "beacon_bridge.h"
 #include "beacon_client.h"
+#include "checkpoint_store.h"
 #include "proxy_config.h"
 #include "proxy_runtime.h"
 #include "rpc_http_server.h"
@@ -192,7 +193,12 @@ StdLogosResult VerifiedProxyImpl::start() {
         cfg.beaconApiUrls = std::move(urls);
     }
 
-    auto r = m_rt->start(cfg);
+    // Next to config.json. A host without persistence gets no store.
+    const std::string checkpointDir = instancePersistencePath().empty()
+        ? std::string()
+        : CheckpointStore::dirFor(instancePersistencePath(), cfg.network,
+                                  cfg.trustedBlockRoot).string();
+    auto r = m_rt->start(cfg, checkpointDir);
     if (r.success) m_beaconUrls = cfg.beaconApiUrls;
     if (!r.success || !m_cfg->httpEnabled) return r;
 

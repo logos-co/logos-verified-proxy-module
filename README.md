@@ -246,6 +246,32 @@ OP anchor reads L1 headers.
 The sync runs whatever `keepAlive` says, so `"off"` no longer lets an idle
 proxy's head go stale or run backwards, as it did before #4828.
 
+### The checkpoint survives a restart
+
+Since [status-im/nimbus-eth1#5103](https://github.com/status-im/nimbus-eth1/pull/5103)
+the library can hand its light-client checkpoint (the finalized header and its
+sync committee, about 25 KB) to the host. The module keeps it in the
+per-instance directory, next to `config.json`:
+
+```
+<instance dir>/lc-checkpoints/<network>-<trustedBlockRoot hex>/lc_checkpoint.bin
+```
+
+The first sync of a run restores it, unless it is older than the light-client
+data the network keeps (then the run bootstraps from `trustedBlockRoot` as
+before), and every sync that moves the finalized header writes it back. So a
+restart skips the bootstrap, and a module that runs at least that often keeps
+working after `trustedBlockRoot` itself has aged out of what beacon nodes serve.
+
+The library checks a restored checkpoint only for age, not against
+`trustedBlockRoot`, which is why the directory is named by both: a new root or
+network starts from that root, never from another anchor's checkpoint. A write
+goes through a temporary file and a rename, and a checkpoint the library cannot
+decode is ignored. `status().checkpoint` reports `enabled`, `found` (this run
+read a stored one; the library may still refuse it as stale), `saves`,
+`savedAt` and `lastError`. A host with no persistence
+directory gets no store, and every run bootstraps.
+
 ## The heartbeat
 
 `keepAlive: "interval"` (the default) issues `eth_getBlockByNumber("latest",
