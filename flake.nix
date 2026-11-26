@@ -68,12 +68,15 @@
               version = pkgs.callPackage "${nbs}/nix/version.nix" { };
             in
             wrapped.override {
-              nim-unwrapped-2_2 = wrapped.nim.overrideAttrs (_: {
+              nim-unwrapped-2_2 = wrapped.nim.overrideAttrs (old: {
                 inherit version;
                 src = pkgs.fetchurl {
                   url = "https://nim-lang.org/download/nim-${version}.tar.xz";
                   hash = "sha256-iSc/g/I3lGX0lMgnHv46Y82eeJITCLhHP0/+1TjbtTY=";
                 };
+                # nixpkgs' openssl.patch (link libssl, not dlopen) no longer applies
+                # to 2.2.14, and nothing here imports std/openssl or sets -d:ssl.
+                patches = lib.filter (p: baseNameOf (toString p) != "openssl.patch") old.patches;
               });
             };
 
