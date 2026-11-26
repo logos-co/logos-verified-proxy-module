@@ -269,8 +269,8 @@ network starts from that root, never from another anchor's checkpoint. A write
 goes through a temporary file and a rename, and a checkpoint the library cannot
 decode is ignored. `status().checkpoint` reports `enabled`, `found` (this run
 read a stored one; the library may still refuse it as stale), `saves`,
-`savedAt` and `lastError`. A host with no persistence
-directory gets no store, and every run bootstraps.
+`savedAt` and `lastError`, which the next successful save clears. A host with
+no persistence directory gets no store, and every run bootstraps.
 
 ## The heartbeat
 

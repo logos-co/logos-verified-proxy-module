@@ -706,6 +706,8 @@ int ProxyRuntime::checkpointPut(const char* key, const uint8_t* data, int len) {
         m_checkpointError = err;
         return RET_ERROR;
     }
+    // A save that works again means the store is healthy: drop the old error.
+    m_checkpointError.clear();
     ++m_checkpointSaves;
     m_checkpointSavedAt = nowSeconds();
     return RET_SUCCESS;

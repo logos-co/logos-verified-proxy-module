@@ -140,7 +140,7 @@ public:
     ///             "failures": number, "consecutiveFailures": number,
     ///             "lastError": string },
     ///   "checkpoint": { "enabled": bool, "found": bool, "saves": number,
-    ///                   "savedAt": number, "lastError": string },
+    ///                   "savedAt": number, "lastError": string },  // cleared by a save
     ///   "counters": { "callsTotal": number, "callsFailed": number,
     ///                 "callsInFlight": number, "callsAdmitted": number,
     ///                 "leakedCalls": number, "heartbeatFailures": number,

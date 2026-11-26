@@ -1158,10 +1158,19 @@ LOGOS_TEST(runtime_reports_a_checkpoint_write_it_could_not_make) {
     const json s = rt.statusSnapshot();
     // A failed write must not take the proxy down with it.
     const bool stillRunning = rt.running();
+
+    // Once the directory can be made, the next save clears the error.
+    std::filesystem::remove(dir.path / "blocked");
+    mockQueueStorage(true, "lc_checkpoint", "value");
+    LOGOS_ASSERT_TRUE(spinUntil([] { return mockStorageResults().size() == 2; }));
+    const json after = rt.statusSnapshot();
     rt.stop();
 
     LOGOS_ASSERT_EQ(mockStorageResults()[0].status, RET_ERROR);
     LOGOS_ASSERT_EQ(s["checkpoint"]["saves"].get<int64_t>(), 0);
     LOGOS_ASSERT_FALSE(s["checkpoint"]["lastError"].get<std::string>().empty());
     LOGOS_ASSERT_TRUE(stillRunning);
+    LOGOS_ASSERT_EQ(mockStorageResults()[1].status, RET_SUCCESS);
+    LOGOS_ASSERT_EQ(after["checkpoint"]["saves"].get<int64_t>(), 1);
+    LOGOS_ASSERT_TRUE(after["checkpoint"]["lastError"].get<std::string>().empty());
 }
