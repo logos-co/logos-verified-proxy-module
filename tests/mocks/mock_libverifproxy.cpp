@@ -47,6 +47,16 @@ std::unordered_map<std::string, std::thread::id> g_threadOf;
 std::vector<std::string> g_order;
 std::vector<std::string> g_proxyMethods;
 std::unordered_map<std::string, std::string> g_params;
+StorageGetProc g_storageGet = nullptr;
+StoragePutProc g_storagePut = nullptr;
+std::vector<MockStorageResult> g_storageResults;
+
+void recordStorage(int status, const uint8_t* data, int len, void*) {
+    std::lock_guard<std::mutex> lk(g_obsMu);
+    g_storageResults.push_back({ status, data && len > 0
+        ? std::string(reinterpret_cast<const char*>(data), static_cast<size_t>(len))
+        : std::string() });
+}
 
 void observe(const char* fn) {
     std::lock_guard<std::mutex> lk(g_obsMu);
@@ -90,6 +100,37 @@ std::vector<std::string> mockProxyMethods() {
     return g_proxyMethods;
 }
 
+bool mockStorageWired() {
+    std::lock_guard<std::mutex> lk(g_obsMu);
+    return g_storageGet && g_storagePut;
+}
+
+void mockQueueStorage(bool put, const std::string& key, const std::string& value) {
+    StorageGetProc get = nullptr;
+    StoragePutProc store = nullptr;
+    {
+        std::lock_guard<std::mutex> lk(g_obsMu);
+        get = g_storageGet;
+        store = g_storagePut;
+    }
+    // Run from the pump, like the library's own restore and persist.
+    std::lock_guard<std::mutex> lk(g_ctx.mu);
+    g_ctx.completions.push_back([=] {
+        observe(put ? "storagePut" : "storageGet");
+        if (put && store)
+            store(reinterpret_cast<Context*>(&g_ctx), key.c_str(),
+                  reinterpret_cast<const uint8_t*>(value.data()),
+                  static_cast<int>(value.size()), recordStorage, nullptr);
+        else if (!put && get)
+            get(reinterpret_cast<Context*>(&g_ctx), key.c_str(), recordStorage, nullptr);
+    });
+}
+
+std::vector<MockStorageResult> mockStorageResults() {
+    std::lock_guard<std::mutex> lk(g_obsMu);
+    return g_storageResults;
+}
+
 void mockReset() {
     {
         std::lock_guard<std::mutex> lk(g_obsMu);
@@ -97,6 +138,9 @@ void mockReset() {
         g_order.clear();
         g_proxyMethods.clear();
         g_params.clear();
+        g_storageGet = nullptr;
+        g_storagePut = nullptr;
+        g_storageResults.clear();
     }
     std::lock_guard<std::mutex> lk(g_ctx.mu);
     g_ctx.completions.clear();
@@ -128,9 +172,16 @@ extern "C" void NimMain(void) {
 
 extern "C" Context* startVerifProxy(char* /*configJson*/,
                                     ExecutionTransportProc,
-                                    BeaconTransportProc) {
+                                    BeaconTransportProc,
+                                    StorageGetProc storageGet,
+                                    StoragePutProc storagePut) {
     LOGOS_CMOCK_RECORD("startVerifProxy");
     observe("startVerifProxy");
+    {
+        std::lock_guard<std::mutex> lk(g_obsMu);
+        g_storageGet = storageGet;
+        g_storagePut = storagePut;
+    }
 
     // Model the BLOCKING prologue so a test can prove start() never runs it on
     // the dispatch thread.

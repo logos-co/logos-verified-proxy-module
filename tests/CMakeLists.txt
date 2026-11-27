@@ -21,6 +21,7 @@ logos_test(
     MODULE_SOURCES
         ../src/proxy_config.cpp
         ../src/proxy_runtime.cpp
+        ../src/checkpoint_store.cpp
         ../src/resource_budget.cpp
         ../src/verified_proxy_impl.cpp
         ../src/verified_proxy_rpc.cpp
@@ -30,6 +31,7 @@ logos_test(
         main.cpp
         test_config_validation.cpp
         test_proxy_runtime.cpp
+        test_checkpoint_store.cpp
         test_resource_budget.cpp
         test_rpc_http_server.cpp
         test_rpc_encoding.cpp

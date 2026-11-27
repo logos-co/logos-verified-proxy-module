@@ -22,10 +22,10 @@
     # git+https, NOT github: — the github: scheme does not carry submodules
     # (NixOS/nix#14982) and nimbus' nix/default.nix asserts on `self.submodules`.
     # Needs Nix >= 2.27 for the flake-level `self = { submodules = true; }`.
-    # v0.4.4 is the first tag with #4921 (batched eth_getProof, #4870), #4918
-    # and #4984 (convHeader's Amsterdam fields). #4828 moved sync to the host:
-    # see nvp_eth_sync.
-    nimbus-eth1.url = "git+https://github.com/status-im/nimbus-eth1?submodules=1&ref=refs/tags/v0.4.4";
+    # A master rev: no tag after v0.4.4 yet. It moves the proxy to verified_proxy/
+    # (#5132), adds checkpoint storage to startVerifProxy (#5103) and needs Nim
+    # 2.2.14 (#5111). #4828 moved sync to the host: see nvp_eth_sync.
+    nimbus-eth1.url = "git+https://github.com/status-im/nimbus-eth1?submodules=1&rev=ea0c7e600b6745ca1a82c3da3e7f8071a97a26cb";
   };
 
   outputs = inputs@{ self, logos-module-builder, logos-nix, nimbus-eth1, ... }:
@@ -41,12 +41,19 @@
         then logos-nix.lib.mkWindowsPkgs { buildSystem = "x86_64-linux"; }
         else import nixpkgs { inherit system; };
 
-      # Nim from the nimbus-build-system submodule nimbus' Makefile uses, not from
-      # its flake.lock: the lock lagged it at 2.2.10, which corrupts the refc heap
-      # (nim-lang/Nim#25992), until nimbus-eth1#4954.
+      # Nim from nimbus' nimbusBuildSystem input, checked against the submodule its
+      # Makefile uses: the lock once lagged it at 2.2.10, which corrupts the refc
+      # heap (nim-lang/Nim#25992), until nimbus-eth1#4954.
       nbs = "${nimbus-eth1}/vendor/nimbus-build-system";
-      nimFor = system: nimbus-eth1.inputs.nixpkgs.legacyPackages.${system}.callPackage
-        "${nbs}/nix/default.nix" { src = nbs; };
+      nimFor = system:
+        let
+          nim = nimbus-eth1.inputs.nimbusBuildSystem.packages.${system}.nim;
+          want = nimbus-eth1.inputs.nixpkgs.legacyPackages.${system}.callPackage
+            "${nbs}/nix/version.nix" { };
+        in
+        assert lib.assertMsg (lib.hasPrefix "${want}-" nim.version)
+          "nimbus' nimbusBuildSystem input builds Nim ${nim.version}, its submodule ${want}";
+        nim;
 
       libverifproxyFor = system:
         let
@@ -61,12 +68,15 @@
               version = pkgs.callPackage "${nbs}/nix/version.nix" { };
             in
             wrapped.override {
-              nim-unwrapped-2_2 = wrapped.nim.overrideAttrs (_: {
+              nim-unwrapped-2_2 = wrapped.nim.overrideAttrs (old: {
                 inherit version;
                 src = pkgs.fetchurl {
                   url = "https://nim-lang.org/download/nim-${version}.tar.xz";
-                  hash = "sha256-Jjmgal6np/z1ffHn4e9NGyvuWMesm9ANvSqlvqHlpWo=";
+                  hash = "sha256-iSc/g/I3lGX0lMgnHv46Y82eeJITCLhHP0/+1TjbtTY=";
                 };
+                # nixpkgs' openssl.patch (link libssl, not dlopen) no longer applies
+                # to 2.2.14, and nothing here imports std/openssl or sets -d:ssl.
+                patches = lib.filter (p: baseNameOf (toString p) != "openssl.patch") old.patches;
               });
             };
 
@@ -173,6 +183,11 @@
               # setup -- its Linux branch takes asm/x86-64.S instead. nimbus
               # ships the pure-Nim bncurve backend for exactly this.
               + lib.optionalString isWin " -d:enable_mcl_lib=false"
+              # nimbus-eth1#5139 inlined the opcode handlers into the EVM's
+              # computed-goto loop, and clang 21's early tail duplication then
+              # takes ~45 min on that one file (4 without it; GCC: a minute).
+              + lib.optionalString base.stdenv.cc.isClang
+                  " --interpreter_dispatch.always:-mllvm=-disable-early-taildup"
               # Nim only adds -fPIC when optGenDynLib is set, and --app:staticlib
               # does not set it. The archive is linked into a SHARED plugin.
               # Meaningless on PE.

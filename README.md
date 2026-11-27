@@ -1,7 +1,7 @@
 # logos-verified-proxy-module
 
 Light-client-verified Ethereum JSON-RPC for Logos, wrapping status-im's
-[`nimbus_verified_proxy`](https://github.com/status-im/nimbus-eth1/tree/master/nimbus_verified_proxy)
+[`nimbus_verified_proxy`](https://github.com/status-im/nimbus-eth1/tree/master/verified_proxy)
 in its C library form (`libverifproxy`).
 
 An ordinary RPC client forwards a request to a provider and **trusts the answer**.
@@ -246,6 +246,32 @@ OP anchor reads L1 headers.
 The sync runs whatever `keepAlive` says, so `"off"` no longer lets an idle
 proxy's head go stale or run backwards, as it did before #4828.
 
+### The checkpoint survives a restart
+
+Since [status-im/nimbus-eth1#5103](https://github.com/status-im/nimbus-eth1/pull/5103)
+the library can hand its light-client checkpoint (the finalized header and its
+sync committee, about 25 KB) to the host. The module keeps it in the
+per-instance directory, next to `config.json`:
+
+```
+<instance dir>/lc-checkpoints/<network>-<trustedBlockRoot hex>/lc_checkpoint.bin
+```
+
+The first sync of a run restores it, unless it is older than the light-client
+data the network keeps (then the run bootstraps from `trustedBlockRoot` as
+before), and every sync that moves the finalized header writes it back. So a
+restart skips the bootstrap, and a module that runs at least that often keeps
+working after `trustedBlockRoot` itself has aged out of what beacon nodes serve.
+
+The library checks a restored checkpoint only for age, not against
+`trustedBlockRoot`, which is why the directory is named by both: a new root or
+network starts from that root, never from another anchor's checkpoint. A write
+goes through a temporary file and a rename, and a checkpoint the library cannot
+decode is ignored. `status().checkpoint` reports `enabled`, `found` (this run
+read a stored one; the library may still refuse it as stale), `saves`,
+`savedAt` and `lastError`, which the next successful save clears. A host with
+no persistence directory gets no store, and every run bootstraps.
+
 ## The heartbeat
 
 `keepAlive: "interval"` (the default) issues `eth_getBlockByNumber("latest",
@@ -387,12 +413,12 @@ nix run github:logos-co/logos-doctest -- run doctests/verified-proxy-runtime.tes
 
 ## Which Nim builds the library
 
-Nim 2.2.12 — the compiler nimbus-eth1 builds itself with, from the pinned rev's
-`vendor/nimbus-build-system` submodule. nimbus-eth1's own `flake.lock` locked
-nimbus-build-system at 2.2.10 for a month after the submodule moved in
+Nim 2.2.14 — the compiler nimbus-eth1 builds itself with, from its own
+`nimbusBuildSystem` flake input. Evaluation fails if that input's Nim differs
+from the pinned rev's `vendor/nimbus-build-system` submodule, which nimbus'
+Makefile uses: the lock sat at 2.2.10 for a month after the submodule moved in
 [nimbus-eth1#4761][nimbus-4761] (it caught up in #4954), and taking the
-compiler from that flake built with 2.2.10. This flake builds it from the
-submodule instead, so a nimbus bump that moves Nim moves it here too.
+compiler from the flake then built with 2.2.10.
 
 2.2.10 corrupts the refc heap. It resets a case object by zeroing only the
 active branch ([nim-lang/Nim#25992][nim-25992]), leaving stale bytes in the rest

@@ -27,6 +27,16 @@ void mockHoldCompletions(bool hold);
 /// The params JSON handed to the last proxyCall for `method`, verbatim.
 std::string mockParamsOf(const std::string& method);
 
+/// Whether the last startVerifProxy got both storage callbacks.
+bool mockStorageWired();
+
+/// Queue a storage get or put through those callbacks; it runs on the next
+/// pump turn, and its delivery lands in mockStorageResults().
+void mockQueueStorage(bool put, const std::string& key, const std::string& value = {});
+
+struct MockStorageResult { int status; std::string data; };
+std::vector<MockStorageResult> mockStorageResults();
+
 /// Status sentinel meaning "this call never completes" — used to test the
 /// timeout path and the joint-ownership CallBox under ASan.
 constexpr int mockNeverCompletes() { return 0xDEAD; }

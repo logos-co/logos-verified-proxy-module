@@ -23,6 +23,8 @@ logos_module(
         src/proxy_config.cpp
         src/proxy_runtime.h
         src/proxy_runtime.cpp
+        src/checkpoint_store.h
+        src/checkpoint_store.cpp
         src/resource_budget.h
         src/resource_budget.cpp
         src/rpc_http_server.h

@@ -6,6 +6,8 @@
 
 #include <atomic>
 #include <chrono>
+#include <filesystem>
+#include <fstream>
 #include <thread>
 
 #include <logos_test.h>
@@ -14,6 +16,7 @@
 #include "proxy_config.h"
 #include "proxy_runtime.h"
 #include "mocks/mock_libverifproxy.h"
+#include "temp_dir.h"
 
 extern "C" {
 #include "lib/verifproxy.h"   // RET_* status codes
@@ -1071,4 +1074,103 @@ LOGOS_TEST(runtime_consecutive_sync_failures_degrade_the_proxy) {
     LOGOS_ASSERT_GE(s["sync"]["consecutiveFailures"].get<int64_t>(), 3);
     LOGOS_ASSERT_TRUE(s["sync"]["lastError"].get<std::string>().find("503") != std::string::npos);
     LOGOS_ASSERT_TRUE(recovered);
+}
+
+// ── Checkpoint storage ──────────────────────────────────────────────────────
+
+LOGOS_TEST(runtime_leaves_storage_off_without_a_checkpoint_dir) {
+    auto t = LogosTestContext("verified_proxy_module");
+    mockReset();
+
+    ProxyRuntime rt(nullptr);
+    LOGOS_ASSERT_TRUE(rt.start(testConfig()).success);
+    const json s = rt.statusSnapshot();
+    rt.stop();
+
+    LOGOS_ASSERT_FALSE(mockStorageWired());
+    LOGOS_ASSERT_FALSE(s["checkpoint"]["enabled"].get<bool>());
+}
+
+LOGOS_TEST(runtime_keeps_the_checkpoint_across_runs) {
+    auto t = LogosTestContext("verified_proxy_module");
+    mockReset();
+    TempDir dir;
+    const std::string value = std::string(1, '\x02') + std::string(1, '\0') + "checkpoint";
+
+    {
+        ProxyRuntime rt(nullptr);
+        LOGOS_ASSERT_TRUE(rt.start(testConfig(), dir.path.string()).success);
+        LOGOS_ASSERT_TRUE(mockStorageWired());
+        mockQueueStorage(true, "lc_checkpoint", value);
+        LOGOS_ASSERT_TRUE(spinUntil([] { return mockStorageResults().size() == 1; }));
+        const json s = rt.statusSnapshot();
+        LOGOS_ASSERT_TRUE(rt.stop().success);
+
+        LOGOS_ASSERT_EQ(mockStorageResults()[0].status, RET_SUCCESS);
+        LOGOS_ASSERT_EQ(s["checkpoint"]["saves"].get<int64_t>(), 1);
+        LOGOS_ASSERT_GT(s["checkpoint"]["savedAt"].get<int64_t>(), 0);
+        // The library calls storage from inside processVerifProxyTasks.
+        LOGOS_ASSERT_TRUE(mockThreadOf("storagePut") == mockThreadOf("startVerifProxy"));
+    }
+    LOGOS_ASSERT_TRUE(std::filesystem::exists(dir.path / "lc_checkpoint.bin"));
+
+    mockReset();
+    ProxyRuntime rt(nullptr);
+    LOGOS_ASSERT_TRUE(rt.start(testConfig(), dir.path.string()).success);
+    mockQueueStorage(false, "lc_checkpoint");
+    LOGOS_ASSERT_TRUE(spinUntil([] { return mockStorageResults().size() == 1; }));
+    const json s = rt.statusSnapshot();
+    rt.stop();
+
+    const MockStorageResult got = mockStorageResults()[0];
+    LOGOS_ASSERT_EQ(got.status, RET_SUCCESS);
+    LOGOS_ASSERT_TRUE(got.data == value);
+    LOGOS_ASSERT_TRUE(s["checkpoint"]["found"].get<bool>());
+}
+
+LOGOS_TEST(runtime_answers_an_empty_store_with_not_found) {
+    auto t = LogosTestContext("verified_proxy_module");
+    mockReset();
+    TempDir dir;
+
+    ProxyRuntime rt(nullptr);
+    LOGOS_ASSERT_TRUE(rt.start(testConfig(), (dir.path / "cp").string()).success);
+    mockQueueStorage(false, "lc_checkpoint");
+    LOGOS_ASSERT_TRUE(spinUntil([] { return mockStorageResults().size() == 1; }));
+    const json s = rt.statusSnapshot();
+    rt.stop();
+
+    LOGOS_ASSERT_EQ(mockStorageResults()[0].status, RET_NOT_FOUND);
+    LOGOS_ASSERT_TRUE(mockStorageResults()[0].data.empty());
+    LOGOS_ASSERT_FALSE(s["checkpoint"]["found"].get<bool>());
+}
+
+LOGOS_TEST(runtime_reports_a_checkpoint_write_it_could_not_make) {
+    auto t = LogosTestContext("verified_proxy_module");
+    mockReset();
+    TempDir dir;
+    { std::ofstream(dir.path / "blocked") << "x"; }
+
+    ProxyRuntime rt(nullptr);
+    LOGOS_ASSERT_TRUE(rt.start(testConfig(), (dir.path / "blocked").string()).success);
+    mockQueueStorage(true, "lc_checkpoint", "value");
+    LOGOS_ASSERT_TRUE(spinUntil([] { return mockStorageResults().size() == 1; }));
+    const json s = rt.statusSnapshot();
+    // A failed write must not take the proxy down with it.
+    const bool stillRunning = rt.running();
+
+    // Once the directory can be made, the next save clears the error.
+    std::filesystem::remove(dir.path / "blocked");
+    mockQueueStorage(true, "lc_checkpoint", "value");
+    LOGOS_ASSERT_TRUE(spinUntil([] { return mockStorageResults().size() == 2; }));
+    const json after = rt.statusSnapshot();
+    rt.stop();
+
+    LOGOS_ASSERT_EQ(mockStorageResults()[0].status, RET_ERROR);
+    LOGOS_ASSERT_EQ(s["checkpoint"]["saves"].get<int64_t>(), 0);
+    LOGOS_ASSERT_FALSE(s["checkpoint"]["lastError"].get<std::string>().empty());
+    LOGOS_ASSERT_TRUE(stillRunning);
+    LOGOS_ASSERT_EQ(mockStorageResults()[1].status, RET_SUCCESS);
+    LOGOS_ASSERT_EQ(after["checkpoint"]["saves"].get<int64_t>(), 1);
+    LOGOS_ASSERT_TRUE(after["checkpoint"]["lastError"].get<std::string>().empty());
 }
