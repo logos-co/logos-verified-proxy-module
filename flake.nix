@@ -183,6 +183,11 @@
               # setup -- its Linux branch takes asm/x86-64.S instead. nimbus
               # ships the pure-Nim bncurve backend for exactly this.
               + lib.optionalString isWin " -d:enable_mcl_lib=false"
+              # nimbus-eth1#5139 inlined the opcode handlers into the EVM's
+              # computed-goto loop, and clang 21's early tail duplication then
+              # takes ~45 min on that one file (4 without it; GCC: a minute).
+              + lib.optionalString base.stdenv.cc.isClang
+                  " --interpreter_dispatch.always:-mllvm=-disable-early-taildup"
               # Nim only adds -fPIC when optGenDynLib is set, and --app:staticlib
               # does not set it. The archive is linked into a SHARED plugin.
               # Meaningless on PE.
