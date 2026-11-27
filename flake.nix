@@ -9,7 +9,7 @@
   };
 
   inputs = {
-    logos-module-builder.url = "github:logos-co/logos-module-builder";
+    logos-module-builder.url = "github:logos-co/logos-module-builder/feat/windows-unit-tests";
     logos-nix.url = "github:logos-co/logos-nix";
 
     # The default beacon source: the consensus-layer providers configured in one
